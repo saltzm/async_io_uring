@@ -18,7 +18,6 @@ pub fn handle_connection(ring: *IO_Uring, client: os.fd_t) !void {
         };
     }
     // Receive
-    // TODO make async
     var buffer_recv: [256]u8 = undefined;
 
     while (true) {
@@ -30,7 +29,7 @@ pub fn handle_connection(ring: *IO_Uring, client: os.fd_t) !void {
             break;
         }
         std.debug.print("Sending {s} to client {}\n", .{ buffer_recv[0..num_bytes_received], client });
-        //const buffer_send = "hello!";
+
         // This is async!
         const result = try AsyncIOUring.send(ring, client, buffer_recv[0..num_bytes_received], 0);
     }
@@ -67,29 +66,10 @@ pub fn server_loop() !void {
     try os.bind(server, &address.any, address.getOsSockLen());
     try os.listen(server, kernel_backlog);
 
-    const buffer_send = [_]u8{ 1, 0, 1, 0, 1, 0, 1, 0, 1, 0 };
-    var buffer_recv = [_]u8{ 0, 1, 0, 1, 0 };
-
     var acceptor_done = async acceptor(&ring, server);
 
-    //var accept_addr: os.sockaddr = undefined;
-    //var accept_addr_len: os.socklen_t = @sizeOf(@TypeOf(accept_addr));
-
-    while (true) {
-        std.debug.print("Submitting...\n", .{});
-        _ = try ring.submit();
-        std.debug.print("Done submitting.\n", .{});
-
-        var cqe_accept = try ring.copy_cqe();
-        std.debug.print("About to resume.\n", .{});
-        if (cqe_accept.user_data != 0) {
-            var resume_node = @intToPtr(*ResumeNode, cqe_accept.user_data);
-            resume_node.result = cqe_accept;
-            resume resume_node.frame;
-        }
-    }
-    AsyncIOUring.run_event_loop(ring);
-    await acceptor_done;
+    try AsyncIOUring.run_event_loop(&ring);
+    try await acceptor_done;
 }
 
 pub fn main() !void {
