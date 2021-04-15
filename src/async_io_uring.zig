@@ -26,7 +26,7 @@ pub const AsyncIOUring = struct {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try ring.accept(@ptrToInt(&node), fd, addr, addrlen, flags);
         suspend;
-        std.debug.print("Accepted: accept {}.\n", .{node.result.res});
+        //std.debug.print("Accepted: accept {}.\n", .{node.result.res});
         return node.result;
     }
 
@@ -42,7 +42,7 @@ pub const AsyncIOUring = struct {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try ring.connect(@ptrToInt(&node), fd, addr, addrlen);
         suspend;
-        std.debug.print("Connected: {}.\n", .{node.result.res});
+        //std.debug.print("Connected: {}.\n", .{node.result.res});
         return node.result;
     }
 
@@ -58,7 +58,7 @@ pub const AsyncIOUring = struct {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try ring.send(@ptrToInt(&node), fd, buffer, flags);
         suspend;
-        std.debug.print("Sent: {}.\n", .{node.result.res});
+        //std.debug.print("Sent: {}.\n", .{node.result.res});
         return node.result;
     }
 
@@ -74,7 +74,7 @@ pub const AsyncIOUring = struct {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try ring.recv(@ptrToInt(&node), fd, buffer, flags);
         suspend;
-        std.debug.print("Received: {}.\n", .{node.result.res});
+        // std.debug.print("Received: {}.\n", .{node.result.res});
         return node.result;
     }
 
@@ -90,18 +90,18 @@ pub const AsyncIOUring = struct {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try ring.read(@ptrToInt(&node), fd, buffer, offset);
         suspend;
-        std.debug.print("Read: {}.\n", .{node.result.res});
+        //std.debug.print("Read: {}.\n", .{node.result.res});
         return node.result;
     }
 
     pub fn run_event_loop(ring: *IO_Uring) !void {
         while (true) {
-            std.debug.print("Submitting...\n", .{});
+            //std.debug.print("Submitting...\n", .{});
             _ = try ring.submit();
-            std.debug.print("Done submitting.\n", .{});
+            //std.debug.print("Done submitting.\n", .{});
 
             var cqe = try ring.copy_cqe();
-            std.debug.print("About to resume.\n", .{});
+            //std.debug.print("About to resume.\n", .{});
             if (cqe.user_data != 0) {
                 var resume_node = @intToPtr(*ResumeNode, cqe.user_data);
                 resume_node.result = cqe;
