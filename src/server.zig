@@ -10,12 +10,22 @@ const testing = std.testing;
 // TODO
 usingnamespace @import("./async_io_uring.zig");
 
-pub fn handle_connection(ring: *IO_Uring, client: os.fd_t) !void {
+// WHAT NEXT:
+//  * Handle errors properly
+//  * Handle connection closure
+//  * Make into a KV store?
+//      * First in-mem
+//      * Then on-disk
+//  * Figure out how to unit test?
+
+pub fn handle_connection(ring: *IO_Uring, client: os.fd_t, conn_idx: u64, closed_conns: *[16]u64, num_closed_conns: *usize) !void {
     defer {
         _ = ring.close(0, client) catch |err| {
             std.debug.print("Error closing\n", .{});
             std.os.exit(1);
         };
+        closed_conns[num_closed_conns.*] = conn_idx;
+        num_closed_conns.* += 1;
     }
     // Receive
     var buffer_recv: [256]u8 = undefined;
@@ -37,7 +47,9 @@ pub fn handle_connection(ring: *IO_Uring, client: os.fd_t) !void {
 
 pub fn acceptor(ring: *IO_Uring, server: os.fd_t) !void {
     var open_conns: [16]@Frame(handle_connection) = undefined;
-    var num_open_conns: u64 = 0;
+    var closed_conns: [16]u64 = undefined;
+    var num_open_conns: usize = 0;
+    var num_closed_conns: usize = 0;
     while (true) {
         var accept_addr: os.sockaddr = undefined;
         var accept_addr_len: os.socklen_t = @sizeOf(@TypeOf(accept_addr));
@@ -47,10 +59,17 @@ pub fn acceptor(ring: *IO_Uring, server: os.fd_t) !void {
         // This is async!
         var new_conn = try AsyncIOUring.accept(ring, server, &accept_addr, &accept_addr_len, 0);
 
-        // Spawns a new connection in a different coroutine.
-        open_conns[num_open_conns] = async handle_connection(ring, new_conn.res);
-        num_open_conns += 1;
-        // TODO handle when connection closes
+        const can_reuse_conn = num_closed_conns > 0;
+        const this_conn_idx = if (can_reuse_conn) closed_conns[num_closed_conns - 1] else num_open_conns;
+        std.debug.print("Spawning new connection with index: {} \n", .{this_conn_idx});
+
+        // Spawns a new connection in a different coroutine
+        open_conns[this_conn_idx] = async handle_connection(ring, new_conn.res, this_conn_idx, &closed_conns, &num_closed_conns);
+        if (can_reuse_conn) {
+            num_closed_conns -= 1;
+        } else {
+            num_open_conns += 1;
+        }
     }
 }
 

@@ -57,11 +57,7 @@ pub fn client_loop(ring: *IO_Uring) !void {
     const stdin_fd = stdin_file.handle;
     var buffer_read: [256]u8 = undefined;
 
-    var timer = try Timer.start();
-    const start = timer.lap();
-    var num_ops: u64 = 0;
-    const max_ops = 100000;
-    while (num_ops < max_ops) : (num_ops += 1) {
+    while (true) {
         // Read something from stdin. This is async :)
         const cqe_read = try AsyncIOUring.read(ring, stdin_fd, buffer_read[0..], buffer_read.len);
         const num_bytes_read = @intCast(usize, cqe_read.res);
@@ -83,5 +79,6 @@ pub fn main() !void {
     defer ring.deinit();
 
     _ = async client_loop(&ring);
+    // _ = async benchmark(&ring);
     try AsyncIOUring.run_event_loop(&ring);
 }
