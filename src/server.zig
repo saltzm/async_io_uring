@@ -18,20 +18,22 @@ usingnamespace @import("./async_io_uring.zig");
 //      * Then on-disk
 //  * Figure out how to unit test?
 
-pub fn handle_connection(ring: *IO_Uring, client: os.fd_t, conn_idx: u64, closed_conns: *[16]u64, num_closed_conns: *usize) !void {
+pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, closed_conns: *[1000]u64, num_closed_conns: *usize) !void {
     defer {
-        _ = ring.close(0, client) catch |err| {
+        // TODO expose close
+        _ = ring.ring.close(0, client) catch |err| {
             std.debug.print("Error closing\n", .{});
             std.os.exit(1);
         };
         closed_conns[num_closed_conns.*] = conn_idx;
         num_closed_conns.* += 1;
     }
+
     // Receive
     var buffer_recv: [256]u8 = undefined;
 
     while (true) {
-        const cqe_recv = try AsyncIOUring.recv(ring, client, buffer_recv[0..], 0);
+        const cqe_recv = try ring.recv(client, buffer_recv[0..], 0);
         if (cqe_recv.res <= 0) {
             std.debug.print("Closing connection\n", .{});
             break;
@@ -41,13 +43,13 @@ pub fn handle_connection(ring: *IO_Uring, client: os.fd_t, conn_idx: u64, closed
         // std.debug.print("Sending {s} to client {}\n", .{ buffer_recv[0..num_bytes_received], client });
 
         // This is async!
-        const result = try AsyncIOUring.send(ring, client, buffer_recv[0..num_bytes_received], 0);
+        const result = try ring.send(client, buffer_recv[0..num_bytes_received], 0);
     }
 }
 
-pub fn acceptor(ring: *IO_Uring, server: os.fd_t) !void {
-    var open_conns: [16]@Frame(handle_connection) = undefined;
-    var closed_conns: [16]u64 = undefined;
+pub fn acceptor(ring: *AsyncIOUring, server: os.fd_t) !void {
+    var open_conns: [1000]@Frame(handle_connection) = undefined;
+    var closed_conns: [1000]u64 = undefined;
     var num_open_conns: usize = 0;
     var num_closed_conns: usize = 0;
     while (true) {
@@ -57,7 +59,7 @@ pub fn acceptor(ring: *IO_Uring, server: os.fd_t) !void {
         std.debug.print("Accepting\n", .{});
 
         // This is async!
-        var new_conn = try AsyncIOUring.accept(ring, server, &accept_addr, &accept_addr_len, 0);
+        var new_conn = try ring.accept(server, &accept_addr, &accept_addr_len, 0);
 
         const can_reuse_conn = num_closed_conns > 0;
         const this_conn_idx = if (can_reuse_conn) closed_conns[num_closed_conns - 1] else num_open_conns;
@@ -77,6 +79,8 @@ pub fn server_loop() !void {
     var ring = try IO_Uring.init(16, 0);
     defer ring.deinit();
 
+    var async_ring = AsyncIOUring{ .ring = &ring };
+
     const address = try net.Address.parseIp4("127.0.0.1", 3131);
     const kernel_backlog = 1;
     const server = try os.socket(address.any.family, os.SOCK_STREAM | os.SOCK_CLOEXEC, 0);
@@ -85,9 +89,9 @@ pub fn server_loop() !void {
     try os.bind(server, &address.any, address.getOsSockLen());
     try os.listen(server, kernel_backlog);
 
-    var acceptor_done = async acceptor(&ring, server);
+    var acceptor_done = async acceptor(&async_ring, server);
 
-    try AsyncIOUring.run_event_loop(&ring);
+    try async_ring.run_event_loop();
     try await acceptor_done;
 }
 
