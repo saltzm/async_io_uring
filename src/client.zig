@@ -25,10 +25,11 @@ pub fn client_loop(ring: *IO_Uring) !void {
     var buffer_read: [256]u8 = undefined;
 
     while (true) {
+        // Read something from stdin. This is async :)
         const cqe_read = try AsyncIOUring.read(ring, stdin_fd, buffer_read[0..], buffer_read.len);
         const num_bytes_read = @intCast(usize, cqe_read.res);
 
-        // Send
+        // Send it to the server.
         const send_result = try AsyncIOUring.send(ring, client, buffer_read[0..num_bytes_read], @intCast(u32, num_bytes_read));
         assert(send_result.res == num_bytes_read);
 
