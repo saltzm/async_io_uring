@@ -81,6 +81,7 @@ pub fn server_loop() !void {
             resume resume_node.frame;
         }
     }
+    AsyncIOUring.run_event_loop(ring);
     await acceptor_done;
 }
 

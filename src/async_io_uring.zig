@@ -30,6 +30,22 @@ pub const AsyncIOUring = struct {
         return node.result;
     }
 
+    /// Queue (but does not submit) an SQE to perform a `connect(2)` on a socket.
+    /// Returns a pointer to the SQE.
+    pub fn connect(
+        ring: *IO_Uring,
+        // user_data: u64,
+        fd: os.fd_t,
+        addr: *const os.sockaddr,
+        addrlen: os.socklen_t,
+    ) !linux.io_uring_cqe {
+        var node = ResumeNode{ .frame = @frame(), .result = undefined };
+        _ = try ring.connect(@ptrToInt(&node), fd, addr, addrlen);
+        suspend;
+        std.debug.print("Connected: {}.\n", .{node.result.res});
+        return node.result;
+    }
+
     /// Queues (but does not submit) an SQE to perform a `send(2)`.
     /// Returns a pointer to the SQE.
     pub fn send(
@@ -44,5 +60,37 @@ pub const AsyncIOUring = struct {
         suspend;
         std.debug.print("Sent: {}.\n", .{node.result.res});
         return node.result;
+    }
+
+    /// Queues (but does not submit) an SQE to perform a `recv(2)`.
+    /// Returns a pointer to the SQE.
+    pub fn recv(
+        ring: *IO_Uring,
+        // user_data: u64,
+        fd: os.fd_t,
+        buffer: []u8,
+        flags: u32,
+    ) !linux.io_uring_cqe {
+        var node = ResumeNode{ .frame = @frame(), .result = undefined };
+        _ = try ring.recv(@ptrToInt(&node), fd, buffer, flags);
+        suspend;
+        std.debug.print("Received: {}.\n", .{node.result.res});
+        return node.result;
+    }
+
+    pub fn run_event_loop(ring: *IO_Uring) !void {
+        while (true) {
+            std.debug.print("Submitting...\n", .{});
+            _ = try ring.submit();
+            std.debug.print("Done submitting.\n", .{});
+
+            var cqe = try ring.copy_cqe();
+            std.debug.print("About to resume.\n", .{});
+            if (cqe.user_data != 0) {
+                var resume_node = @intToPtr(*ResumeNode, cqe.user_data);
+                resume_node.result = cqe;
+                resume resume_node.frame;
+            }
+        }
     }
 };

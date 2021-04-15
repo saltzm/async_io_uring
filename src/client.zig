@@ -40,42 +40,37 @@ pub fn acceptor(ring: *IO_Uring, server: os.fd_t) !void {
     }
 }
 
-pub fn client_loop() !void {
-    var ring = try IO_Uring.init(16, 0);
-    defer ring.deinit();
-
+pub fn client_loop(ring: *IO_Uring) !void {
     const address = try net.Address.parseIp4("127.0.0.1", 3131);
 
     const client = try os.socket(address.any.family, os.SOCK_STREAM | os.SOCK_CLOEXEC, 0);
     defer os.close(client);
 
-    const connect = try ring.connect(0xcccccccc, client, &address.any, address.getOsSockLen());
-    _ = try ring.submit();
-    var cqe_connect = try ring.copy_cqe();
+    //const connect = try ring.connect(0xcccccccc, client, &address.any, address.getOsSockLen());
+    const cqe_connect = try AsyncIOUring.connect(ring, client, &address.any, address.getOsSockLen());
+    //_ = try ring.submit();
+    //var cqe_connect = try ring.copy_cqe();
     assert(cqe_connect.res == 0);
 
     var server_fd = cqe_connect.res;
 
     // Send
     const hello = "hello!";
-    const send = try ring.send(0, client, hello[0..], 0);
-    send.flags |= linux.IOSQE_IO_LINK;
-    const submit_res = try ring.submit();
-    assert(submit_res == 1);
-
-    const cqe_send = try ring.copy_cqe();
-    std.debug.print("cqe_send.res: {}\n", .{cqe_send.res});
-    assert(cqe_send.res == hello.len);
+    const send_result = try AsyncIOUring.send(ring, client, hello[0..], 0);
+    assert(send_result.res == hello.len);
 
     // Receive
     var buffer_recv: [256]u8 = undefined;
-    const recv = try ring.recv(0, client, buffer_recv[0..], 0);
-    _ = try ring.submit();
-    const cqe_recv = try ring.copy_cqe();
+    const cqe_recv = try AsyncIOUring.recv(ring, client, buffer_recv[0..], 0);
+
     const num_bytes_received = @intCast(usize, cqe_recv.res);
     std.debug.print("Received: {s}\n", .{buffer_recv[0..num_bytes_received]});
 }
 
 pub fn main() !void {
-    try client_loop();
+    var ring = try IO_Uring.init(16, 0);
+    defer ring.deinit();
+
+    _ = async client_loop(&ring);
+    try AsyncIOUring.run_event_loop(&ring);
 }
