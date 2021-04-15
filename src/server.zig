@@ -17,7 +17,7 @@ const AsyncIOUring = struct {
     /// Returns a pointer to the SQE.
     pub fn accept(
         ring: *IO_Uring,
-        //        user_data: u64,
+        //        user_data: u64, TODO
         fd: os.fd_t,
         addr: *os.sockaddr,
         addrlen: *os.socklen_t,
@@ -27,6 +27,22 @@ const AsyncIOUring = struct {
         _ = try ring.accept(@ptrToInt(&node), fd, addr, addrlen, flags);
         suspend;
         std.debug.print("Accepted: accept {}.\n", .{node.result.res});
+        return node.result;
+    }
+
+    /// Queues (but does not submit) an SQE to perform a `send(2)`.
+    /// Returns a pointer to the SQE.
+    pub fn send(
+        ring: *IO_Uring,
+        //user_data: u64,
+        fd: os.fd_t,
+        buffer: []const u8,
+        flags: u32,
+    ) !linux.io_uring_cqe {
+        var node = ResumeNode{ .frame = @frame(), .result = undefined };
+        _ = try ring.send(@ptrToInt(&node), fd, buffer, flags);
+        suspend;
+        std.debug.print("Sent: {}.\n", .{node.result.res});
         return node.result;
     }
 };
@@ -40,11 +56,8 @@ pub fn handle_connection(ring: *IO_Uring, client: os.fd_t) !void {
     }
 
     std.debug.print("Sending\n", .{});
-    var node = ResumeNode{ .frame = @frame(), .result = undefined };
     const buffer_send = "hello!";
-    const send = try ring.send(@ptrToInt(&node), client, buffer_send[0..], 0);
-    suspend;
-    std.debug.print("Sent: {}.\n", .{node.result.res});
+    const result = try AsyncIOUring.send(ring, client, buffer_send[0..], 0);
 }
 
 pub fn acceptor(ring: *IO_Uring, server: os.fd_t) !void {
@@ -77,7 +90,7 @@ pub fn server_loop() !void {
     const buffer_send = [_]u8{ 1, 0, 1, 0, 1, 0, 1, 0, 1, 0 };
     var buffer_recv = [_]u8{ 0, 1, 0, 1, 0 };
 
-    _ = async acceptor(&ring, server);
+    var acceptor_done = async acceptor(&ring, server);
 
     //var accept_addr: os.sockaddr = undefined;
     //var accept_addr_len: os.socklen_t = @sizeOf(@TypeOf(accept_addr));
@@ -95,6 +108,7 @@ pub fn server_loop() !void {
             resume resume_node.frame;
         }
     }
+    await acceptor_done;
 }
 
 pub fn main() !void {
