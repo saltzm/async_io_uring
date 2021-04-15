@@ -20,20 +20,25 @@ pub fn handle_connection(ring: *IO_Uring, client: os.fd_t) !void {
     // Receive
     // TODO make async
     var buffer_recv: [256]u8 = undefined;
-    const recv = try ring.recv(0, client, buffer_recv[0..], 0);
-    _ = try ring.submit();
 
-    const cqe_recv = try ring.copy_cqe();
-    const num_bytes_received = @intCast(usize, cqe_recv.res);
-    std.debug.print("Received: {s}\n", .{buffer_recv[0..num_bytes_received]});
-
-    std.debug.print("Sending\n", .{});
-    //const buffer_send = "hello!";
-    // This is async!
-    const result = try AsyncIOUring.send(ring, client, buffer_recv[0..num_bytes_received], 0);
+    while (true) {
+        const cqe_recv = try AsyncIOUring.recv(ring, client, buffer_recv[0..], 0);
+        const num_bytes_received = @intCast(usize, cqe_recv.res);
+        std.debug.print("Received: {s}\n", .{buffer_recv[0..num_bytes_received]});
+        if (num_bytes_received == 0) {
+            std.debug.print("Closing connection\n", .{});
+            break;
+        }
+        std.debug.print("Sending {s} to client {}\n", .{ buffer_recv[0..num_bytes_received], client });
+        //const buffer_send = "hello!";
+        // This is async!
+        const result = try AsyncIOUring.send(ring, client, buffer_recv[0..num_bytes_received], 0);
+    }
 }
 
 pub fn acceptor(ring: *IO_Uring, server: os.fd_t) !void {
+    var open_conns: [16]@Frame(handle_connection) = undefined;
+    var num_open_conns: u64 = 0;
     while (true) {
         var accept_addr: os.sockaddr = undefined;
         var accept_addr_len: os.socklen_t = @sizeOf(@TypeOf(accept_addr));
@@ -44,7 +49,9 @@ pub fn acceptor(ring: *IO_Uring, server: os.fd_t) !void {
         var new_conn = try AsyncIOUring.accept(ring, server, &accept_addr, &accept_addr_len, 0);
 
         // Spawns a new connection in a different coroutine.
-        try handle_connection(ring, new_conn.res);
+        open_conns[num_open_conns] = async handle_connection(ring, new_conn.res);
+        num_open_conns += 1;
+        // TODO handle when connection closes
     }
 }
 
