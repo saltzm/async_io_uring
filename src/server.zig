@@ -7,45 +7,8 @@ const net = std.net;
 const os = std.os;
 const linux = os.linux;
 const testing = std.testing;
-
-const ResumeNode = struct {
-    frame: anyframe = undefined, result: linux.io_uring_cqe = undefined
-};
-
-const AsyncIOUring = struct {
-    /// Queues (but does not submit) an SQE to perform an `accept4(2)` on a socket.
-    /// Returns a pointer to the SQE.
-    pub fn accept(
-        ring: *IO_Uring,
-        //        user_data: u64, TODO
-        fd: os.fd_t,
-        addr: *os.sockaddr,
-        addrlen: *os.socklen_t,
-        flags: u32,
-    ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try ring.accept(@ptrToInt(&node), fd, addr, addrlen, flags);
-        suspend;
-        std.debug.print("Accepted: accept {}.\n", .{node.result.res});
-        return node.result;
-    }
-
-    /// Queues (but does not submit) an SQE to perform a `send(2)`.
-    /// Returns a pointer to the SQE.
-    pub fn send(
-        ring: *IO_Uring,
-        //user_data: u64,
-        fd: os.fd_t,
-        buffer: []const u8,
-        flags: u32,
-    ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try ring.send(@ptrToInt(&node), fd, buffer, flags);
-        suspend;
-        std.debug.print("Sent: {}.\n", .{node.result.res});
-        return node.result;
-    }
-};
+// TODO
+usingnamespace @import("./async_io_uring.zig");
 
 pub fn handle_connection(ring: *IO_Uring, client: os.fd_t) !void {
     defer {
@@ -54,10 +17,20 @@ pub fn handle_connection(ring: *IO_Uring, client: os.fd_t) !void {
             std.os.exit(1);
         };
     }
+    // Receive
+    // TODO make async
+    var buffer_recv: [256]u8 = undefined;
+    const recv = try ring.recv(0, client, buffer_recv[0..], 0);
+    _ = try ring.submit();
+
+    const cqe_recv = try ring.copy_cqe();
+    const num_bytes_received = @intCast(usize, cqe_recv.res);
+    std.debug.print("Received: {s}\n", .{buffer_recv[0..num_bytes_received]});
 
     std.debug.print("Sending\n", .{});
-    const buffer_send = "hello!";
-    const result = try AsyncIOUring.send(ring, client, buffer_send[0..], 0);
+    //const buffer_send = "hello!";
+    // This is async!
+    const result = try AsyncIOUring.send(ring, client, buffer_recv[0..num_bytes_received], 0);
 }
 
 pub fn acceptor(ring: *IO_Uring, server: os.fd_t) !void {
