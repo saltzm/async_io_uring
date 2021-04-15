@@ -81,6 +81,6 @@ pub fn main() !void {
     var async_ring = AsyncIOUring{ .ring = &ring };
 
     _ = async client_loop(&async_ring);
-    // _ = async benchmark(&ring);
+    // _ = async benchmark(&async_ring);
     try async_ring.run_event_loop();
 }

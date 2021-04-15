@@ -11,14 +11,16 @@ const testing = std.testing;
 usingnamespace @import("./async_io_uring.zig");
 
 // WHAT NEXT:
+//  * Make into a KV store!
 //  * Handle errors properly
-//  * Handle connection closure
-//  * Make into a KV store?
 //      * First in-mem
 //      * Then on-disk
 //  * Figure out how to unit test?
+//  * Turn linux errors on the cqe into zig errors
 
-pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, closed_conns: *[1000]u64, num_closed_conns: *usize) !void {
+const max_connections = 1000;
+
+pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, closed_conns: *[max_connections]u64, num_closed_conns: *usize) !void {
     defer {
         // TODO expose close
         _ = ring.ring.close(0, client) catch |err| {
@@ -48,8 +50,8 @@ pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, cl
 }
 
 pub fn acceptor(ring: *AsyncIOUring, server: os.fd_t) !void {
-    var open_conns: [1000]@Frame(handle_connection) = undefined;
-    var closed_conns: [1000]u64 = undefined;
+    var open_conns: [max_connections]@Frame(handle_connection) = undefined;
+    var closed_conns: [max_connections]u64 = undefined;
     var num_open_conns: usize = 0;
     var num_closed_conns: usize = 0;
     while (true) {
@@ -73,10 +75,15 @@ pub fn acceptor(ring: *AsyncIOUring, server: os.fd_t) !void {
             num_open_conns += 1;
         }
     }
+
+    // TODO: Is this really needed?
+    for (open_conns[0..num_open_conns]) |conn| {
+        await conn;
+    }
 }
 
 pub fn server_loop() !void {
-    var ring = try IO_Uring.init(16, 0);
+    var ring = try IO_Uring.init(128, 0);
     defer ring.deinit();
 
     var async_ring = AsyncIOUring{ .ring = &ring };

@@ -95,17 +95,21 @@ pub const AsyncIOUring = struct {
     }
 
     pub fn run_event_loop(self: *AsyncIOUring) !void {
+        var cqes: [256]linux.io_uring_cqe = undefined;
+        const max_num_events_to_wait_for_in_kernel = 1;
         while (true) {
             //std.debug.print("Submitting...\n", .{});
             _ = try self.ring.submit();
             //std.debug.print("Done submitting.\n", .{});
 
-            var cqe = try self.ring.copy_cqe();
-            //std.debug.print("About to resume.\n", .{});
-            if (cqe.user_data != 0) {
-                var resume_node = @intToPtr(*ResumeNode, cqe.user_data);
-                resume_node.result = cqe;
-                resume resume_node.frame;
+            var num_ready_cqes = try self.ring.copy_cqes(cqes[0..], max_num_events_to_wait_for_in_kernel);
+            for (cqes[0..num_ready_cqes]) |cqe| {
+                //std.debug.print("About to resume.\n", .{});
+                if (cqe.user_data != 0) {
+                    var resume_node = @intToPtr(*ResumeNode, cqe.user_data);
+                    resume_node.result = cqe;
+                    resume resume_node.frame;
+                }
             }
         }
     }
