@@ -78,6 +78,22 @@ pub const AsyncIOUring = struct {
         return node.result;
     }
 
+    /// Queues (but does not submit) an SQE to perform a `read(2)`.
+    /// Returns a pointer to the SQE.
+    pub fn read(
+        ring: *IO_Uring,
+        // user_data: u64,
+        fd: os.fd_t,
+        buffer: []u8,
+        offset: u64,
+    ) !linux.io_uring_cqe {
+        var node = ResumeNode{ .frame = @frame(), .result = undefined };
+        _ = try ring.read(@ptrToInt(&node), fd, buffer, offset);
+        suspend;
+        std.debug.print("Read: {}.\n", .{node.result.res});
+        return node.result;
+    }
+
     pub fn run_event_loop(ring: *IO_Uring) !void {
         while (true) {
             std.debug.print("Submitting...\n", .{});

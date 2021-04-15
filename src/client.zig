@@ -25,16 +25,10 @@ pub fn client_loop(ring: *IO_Uring) !void {
     var buffer_read: [256]u8 = undefined;
 
     while (true) {
-        std.debug.print("About to read\n", .{});
-        const sqe_read = try ring.read(0, stdin_fd, buffer_read[0..], buffer_read.len);
-        _ = try ring.submit();
-        std.debug.print("About to read 2\n", .{});
-        const cqe_read = try ring.copy_cqe();
-        std.debug.print("About to read 3\n", .{});
+        const cqe_read = try AsyncIOUring.read(ring, stdin_fd, buffer_read[0..], buffer_read.len);
         const num_bytes_read = @intCast(usize, cqe_read.res);
 
         // Send
-        //    const hello = "hello!";
         const send_result = try AsyncIOUring.send(ring, client, buffer_read[0..num_bytes_read], @intCast(u32, num_bytes_read));
         assert(send_result.res == num_bytes_read);
 
