@@ -65,6 +65,8 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t) !void {
         var accept_cqe = try ring.accept(NoUserData, server, &accept_addr, &accept_addr_len, 0);
         var new_conn_fd = accept_cqe.res;
 
+        // TODO: Handle exceeding max_connections.
+
         // Get an index in the array of open connections for this new
         // connection.
         const this_conn_idx = blk: {
@@ -94,7 +96,9 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t) !void {
     }
 }
 
-// Open a socket and run the echo server listening on that socket.
+// Open a socket and run the echo server listening on that socket. The server
+// can handle up to max_connections concurrent connections, all in a single
+// thread..
 pub fn run_server(ring: *AsyncIOUring) !void {
     const address = try net.Address.parseIp4("127.0.0.1", 3131);
     const kernel_backlog = 1;
