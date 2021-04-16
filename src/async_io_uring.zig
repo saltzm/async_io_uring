@@ -12,6 +12,11 @@ const ResumeNode = struct { frame: anyframe = undefined, user_data: u64, result:
 // 0s everywhere.
 pub const NoUserData: u64 = 0;
 
+// TODO: Use existing codes and make them more semantically meaningful. This is
+// just a bandaid so that callers don't have to check the 'res' field on CQEs
+// after calling functions on AsyncIOUring.
+pub const AsyncIOUringError = error{UnknownError};
+
 // Wrapper for IO_Uring that turns its functions into async functions that
 // suspend after enqueuing entries to the submission queue and resume and
 // return once a result is available in the completion queue.
@@ -54,6 +59,11 @@ pub const AsyncIOUring = struct {
         var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
         _ = try self.ring.accept(@ptrToInt(&node), fd, addr, addrlen, flags);
         suspend;
+
+        if (node.result.res < 0) {
+            return AsyncIOUringError.UnknownError;
+        }
+
         return node.result;
     }
 
@@ -70,6 +80,11 @@ pub const AsyncIOUring = struct {
         var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
         _ = try self.ring.connect(@ptrToInt(&node), fd, addr, addrlen);
         suspend;
+
+        if (node.result.res < 0) {
+            return AsyncIOUringError.UnknownError;
+        }
+
         return node.result;
     }
 
@@ -86,6 +101,10 @@ pub const AsyncIOUring = struct {
         var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
         _ = try self.ring.send(@ptrToInt(&node), fd, buffer, flags);
         suspend;
+        if (node.result.res <= 0) {
+            return AsyncIOUringError.UnknownError;
+        }
+
         return node.result;
     }
 
@@ -102,6 +121,12 @@ pub const AsyncIOUring = struct {
         var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
         _ = try self.ring.recv(@ptrToInt(&node), fd, buffer, flags);
         suspend;
+
+        // TODO: Is it ever valid to receive 0 bytes?
+        if (node.result.res <= 0) {
+            return AsyncIOUringError.UnknownError;
+        }
+
         return node.result;
     }
 
@@ -118,6 +143,11 @@ pub const AsyncIOUring = struct {
         var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
         _ = try self.ring.read(@ptrToInt(&node), fd, buffer, offset);
         suspend;
+
+        if (node.result.res < 0) {
+            return AsyncIOUringError.UnknownError;
+        }
+
         return node.result;
     }
 

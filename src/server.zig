@@ -38,16 +38,10 @@ pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, cl
     // that input as output.
     while (true) {
         const recv_cqe = try ring.recv(NoUserData, client, buffer[0..], 0);
-        if (recv_cqe.res <= 0) {
-            break;
-        }
+
         const num_bytes_received = @intCast(usize, recv_cqe.res);
 
-        const send_result = try ring.send(NoUserData, client, buffer[0..num_bytes_received], 0);
-        if (send_result.res != num_bytes_received) {
-            // There was an error, so close the connection
-            break;
-        }
+        _ = try ring.send(NoUserData, client, buffer[0..num_bytes_received], 0);
     }
 }
 
@@ -96,6 +90,7 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t) !void {
     }
 }
 
+// Open a socket and run the echo server listening on that socket.
 pub fn run_server(ring: *AsyncIOUring) !void {
     const address = try net.Address.parseIp4("127.0.0.1", 3131);
     const kernel_backlog = 1;
