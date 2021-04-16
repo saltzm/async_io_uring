@@ -1,11 +1,10 @@
 
 # About
 
-In-progress async wrapper for IO\_Uring library and examples. The project isn't
-structured super well and is missing some error handling. This is my first
-actual Zig project and I love it so far. I would like to continue working on it
-and then extract the event loop into its own library if it continues to seem
-useful.
+In-progress async wrapper for the `IO_Uring` library and examples. The project
+is very much not finished. This is my first actual Zig project and I love it so
+far. I would like to continue working on it and then extract the event loop
+into its own library if it continues to seem useful.
 
 Files:
 * `src/client.zig`: Echo client. 
