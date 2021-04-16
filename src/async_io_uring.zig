@@ -1,17 +1,19 @@
 const std = @import("std");
 const IO_Uring = std.os.linux.IO_Uring;
-const assert = std.debug.assert;
-const builtin = std.builtin;
-const mem = std.mem;
-const net = std.net;
 const os = std.os;
 const linux = os.linux;
-const testing = std.testing;
 
-pub const ResumeNode = struct { frame: anyframe = undefined, result: linux.io_uring_cqe = undefined };
+// Used as user data for submission queue entries, so that the event loop can
+// have resume the callers frame.
+//
+// TODO: Allow additional user_data.
+const ResumeNode = struct { frame: anyframe = undefined, result: linux.io_uring_cqe = undefined };
 
 // TODO: Update comments to reflect that all functions queue an SQE and suspend until the CQE is ready
-// and resumed by the event loop
+//       and resumed by the event loop.
+// TODO: Turn linux errors on the cqe into zig errors.
+// TODO: Consider making AsyncIOUring own the ring and add init()/deinit()
+//       functions.
 pub const AsyncIOUring = struct {
     ring: *IO_Uring = undefined,
 
@@ -19,7 +21,7 @@ pub const AsyncIOUring = struct {
     /// Returns a pointer to the SQE.
     pub fn accept(
         self: *AsyncIOUring,
-        //        user_data: u64, TODO allow extra user data?
+        //        user_data: u64, TODO
         fd: os.fd_t,
         addr: *os.sockaddr,
         addrlen: *os.socklen_t,
@@ -28,7 +30,6 @@ pub const AsyncIOUring = struct {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.accept(@ptrToInt(&node), fd, addr, addrlen, flags);
         suspend;
-        //std.debug.print("Accepted: accept {}.\n", .{node.result.res});
         return node.result;
     }
 
@@ -44,7 +45,6 @@ pub const AsyncIOUring = struct {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.connect(@ptrToInt(&node), fd, addr, addrlen);
         suspend;
-        //std.debug.print("Connected: {}.\n", .{node.result.res});
         return node.result;
     }
 
@@ -60,7 +60,6 @@ pub const AsyncIOUring = struct {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.send(@ptrToInt(&node), fd, buffer, flags);
         suspend;
-        //std.debug.print("Sent: {}.\n", .{node.result.res});
         return node.result;
     }
 
@@ -76,7 +75,6 @@ pub const AsyncIOUring = struct {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.recv(@ptrToInt(&node), fd, buffer, flags);
         suspend;
-        // std.debug.print("Received: {}.\n", .{node.result.res});
         return node.result;
     }
 
@@ -92,7 +90,6 @@ pub const AsyncIOUring = struct {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.read(@ptrToInt(&node), fd, buffer, offset);
         suspend;
-        //std.debug.print("Read: {}.\n", .{node.result.res});
         return node.result;
     }
 
@@ -111,17 +108,17 @@ pub const AsyncIOUring = struct {
         return node.result;
     }
 
+    // Runs a loop to submit tasks on the underling IU_Uring and block waiting
+    // for completion events. When a completion queue event (cqe) is available, it
+    // will resume the coroutine that submitted the request corresponding to that cqe.
     pub fn run_event_loop(self: *AsyncIOUring) !void {
         var cqes: [256]linux.io_uring_cqe = undefined;
         const max_num_events_to_wait_for_in_kernel = 1;
         while (true) {
-            //std.debug.print("Submitting...\n", .{});
             _ = try self.ring.submit();
-            //std.debug.print("Done submitting.\n", .{});
 
             var num_ready_cqes = try self.ring.copy_cqes(cqes[0..], max_num_events_to_wait_for_in_kernel);
             for (cqes[0..num_ready_cqes]) |cqe| {
-                //std.debug.print("About to resume.\n", .{});
                 if (cqe.user_data != 0) {
                     var resume_node = @intToPtr(*ResumeNode, cqe.user_data);
                     resume_node.result = cqe;

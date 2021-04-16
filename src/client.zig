@@ -1,76 +1,61 @@
 const std = @import("std");
 const IO_Uring = std.os.linux.IO_Uring;
 const assert = std.debug.assert;
-const builtin = std.builtin;
-const mem = std.mem;
 const net = std.net;
 const os = std.os;
 const linux = os.linux;
-const testing = std.testing;
-const Timer = std.time.Timer;
 
-// TODO
-usingnamespace @import("async_io_uring.zig");
+const AsyncIOUring = @import("async_io_uring.zig").AsyncIOUring;
 
-pub fn benchmark(ring: *AsyncIOUring) !void {
-    const address = try net.Address.parseIp4("127.0.0.1", 3131);
-
-    const client = try os.socket(address.any.family, os.SOCK_STREAM | os.SOCK_CLOEXEC, 0);
-    defer os.close(client);
-
-    const cqe_connect = try ring.connect(client, &address.any, address.getOsSockLen());
-    assert(cqe_connect.res == 0);
-    const buffer_read = "hello";
-    var buffer_recv: [256]u8 = undefined;
-
-    var timer = try Timer.start();
-    const start = timer.lap();
-    var num_ops: u64 = 0;
-    const max_ops = 100000;
-    while (num_ops < max_ops) : (num_ops += 1) {
-        const num_bytes_read = buffer_read.len;
-
-        // Send it to the server.
-        const send_result = try ring.send(client, buffer_read[0..num_bytes_read], @intCast(u32, num_bytes_read));
-        assert(send_result.res == num_bytes_read);
-
-        // Receive the response.
-        const cqe_recv = try ring.recv(client, buffer_recv[0..], 0);
-        const num_bytes_received = @intCast(usize, cqe_recv.res);
-    }
-    const end = timer.read();
-    const elapsed_s = @intToFloat(f64, end - start) / std.time.ns_per_s;
-    const ops_per_sec = max_ops / elapsed_s;
-    std.debug.print("throughput: {d} ops per sec\n", .{ops_per_sec});
-}
-
+// Echo client. Reads a string from stdin, sends it to the server, and prints
+// the response.
+//
+// Note to the reader: CQE stands for completion queue entry in variable names.
+// This is the data structure returned by the kernel when an io_uring event is
+// complete.
 pub fn client_loop(ring: *AsyncIOUring) !void {
     const address = try net.Address.parseIp4("127.0.0.1", 3131);
 
     const client = try os.socket(address.any.family, os.SOCK_STREAM | os.SOCK_CLOEXEC, 0);
-    defer os.close(client);
+    defer {
+        std.debug.print("Closing connection\n", .{});
+        // TODO: Expose close on AsyncIOUring.
+        _ = ring.ring.close(0, client) catch |err| {
+            std.debug.print("Error closing\n", .{});
+            std.os.exit(1);
+        };
+    }
 
-    const cqe_connect = try ring.connect(client, &address.any, address.getOsSockLen());
-    assert(cqe_connect.res == 0);
+    const connect_cqe = try ring.connect(client, &address.any, address.getOsSockLen());
+    assert(connect_cqe.res == 0);
 
     const stdin_file = std.io.getStdIn();
     const stdin_fd = stdin_file.handle;
-    var buffer_read: [256]u8 = undefined;
-    var buffer_recv: [256]u8 = undefined;
+    var input_buffer: [256]u8 = undefined;
 
     while (true) {
-        // Read something from stdin. This is async :)
-        const cqe_read = try ring.read(stdin_fd, buffer_read[0..], buffer_read.len);
-        const num_bytes_read = @intCast(usize, cqe_read.res);
+        std.debug.print("Input: ", .{});
+        // Read something from stdin.
+        const read_cqe = try ring.read(stdin_fd, input_buffer[0..], input_buffer.len);
+        if (read_cqe.res < 0) {
+            // TODO: Convert these errors into zig errors inside AsyncIOUring.
+            break;
+        }
+        const num_bytes_read = @intCast(usize, read_cqe.res);
 
         // Send it to the server.
-        const send_result = try ring.send(client, buffer_read[0..num_bytes_read], @intCast(u32, num_bytes_read));
-        assert(send_result.res == num_bytes_read);
+        const send_result = try ring.send(client, input_buffer[0..num_bytes_read], @intCast(u32, num_bytes_read));
+        if (send_result.res != num_bytes_read) {
+            break;
+        }
 
         // Receive response.
-        const cqe_recv = try ring.recv(client, buffer_recv[0..], 0);
-        const num_bytes_received = @intCast(usize, cqe_recv.res);
-        std.debug.print("Received: {s}\n", .{buffer_recv[0..num_bytes_received]});
+        const recv_cqe = try ring.recv(client, input_buffer[0..], 0);
+        if (recv_cqe.res <= 0) {
+            break;
+        }
+        const num_bytes_received = @intCast(usize, recv_cqe.res);
+        std.debug.print("Received: {s}\n", .{input_buffer[0..num_bytes_received]});
     }
 }
 
@@ -81,6 +66,6 @@ pub fn main() !void {
     var async_ring = AsyncIOUring{ .ring = &ring };
 
     _ = async client_loop(&async_ring);
-    // _ = async benchmark(&async_ring);
+
     try async_ring.run_event_loop();
 }

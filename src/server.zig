@@ -7,48 +7,51 @@ const net = std.net;
 const os = std.os;
 const linux = os.linux;
 const testing = std.testing;
-// TODO
-usingnamespace @import("./async_io_uring.zig");
 
-// WHAT NEXT:
-//  * Make into a KV store!
-//  * Handle errors properly
-//      * First in-mem
-//      * Then on-disk
-//  * Figure out how to unit test?
-//  * Turn linux errors on the cqe into zig errors
+const AsyncIOUring = @import("async_io_uring.zig").AsyncIOUring;
 
+// Currently the number of max connections is hardcoded. This allows you to
+// avoid heap allocation in growing and shrinking the list of active connections.
 const max_connections = 1000;
 
+// Does the main echo server loop for a single connection, recieving and
+// echoing input over the file descriptor for the client.
 pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, closed_conns: *[max_connections]u64, num_closed_conns: *usize) !void {
     defer {
-        // TODO expose close
+        std.debug.print("Closing connection with index {}\n", .{conn_idx});
+        // TODO: Expose close on AsyncIOUring.
         _ = ring.ring.close(0, client) catch |err| {
             std.debug.print("Error closing\n", .{});
             std.os.exit(1);
         };
+        // Return this connection index to the list of free connection indices.
         closed_conns[num_closed_conns.*] = conn_idx;
         num_closed_conns.* += 1;
     }
 
-    var buffer_recv: [256]u8 = undefined;
+    // Used to send and receive.
+    var buffer: [256]u8 = undefined;
 
+    // Loop until the connection is closed, receiving input and sending back
+    // that input as output.
     while (true) {
-        const cqe_recv = try ring.recv(client, buffer_recv[0..], 0);
-        if (cqe_recv.res <= 0) {
-            std.debug.print("Closing connection\n", .{});
+        const recv_cqe = try ring.recv(client, buffer[0..], 0);
+        if (recv_cqe.res <= 0) {
             break;
         }
-        const num_bytes_received = @intCast(usize, cqe_recv.res);
-        // std.debug.print("Received: {s}\n", .{buffer_recv[0..num_bytes_received]});
-        // std.debug.print("Sending {s} to client {}\n", .{ buffer_recv[0..num_bytes_received], client });
+        const num_bytes_received = @intCast(usize, recv_cqe.res);
 
-        // This is async!
-        const result = try ring.send(client, buffer_recv[0..num_bytes_received], 0);
+        const send_result = try ring.send(client, buffer[0..num_bytes_received], 0);
+        if (send_result.res != num_bytes_received) {
+            // There was an error, so close the connection
+            break;
+        }
     }
 }
 
-pub fn acceptor(ring: *AsyncIOUring, server: os.fd_t) !void {
+// Loops accepting new connections and spawning new coroutines to handle those
+// connections.
+pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t) !void {
     var open_conns: [max_connections]@Frame(handle_connection) = undefined;
     var closed_conns: [max_connections]u64 = undefined;
     var num_open_conns: usize = 0;
@@ -59,34 +62,39 @@ pub fn acceptor(ring: *AsyncIOUring, server: os.fd_t) !void {
 
         std.debug.print("Accepting\n", .{});
 
-        // This is async!
+        // Wait for a new connection request.
         var new_conn = try ring.accept(server, &accept_addr, &accept_addr_len, 0);
 
-        const can_reuse_conn = num_closed_conns > 0;
-        const this_conn_idx = if (can_reuse_conn) closed_conns[num_closed_conns - 1] else num_open_conns;
+        // Get an index in the array of open connections for this new
+        // connection.
+        const this_conn_idx = blk: {
+            if (num_closed_conns > 0) {
+                // Reuse the last closed connection's index and decrement the
+                // number of closed connections.
+                num_closed_conns -= 1;
+                break :blk closed_conns[num_closed_conns];
+            } else {
+                const next_idx = num_open_conns;
+                // We need to expand the number of open connections.
+                num_open_conns += 1;
+                break :blk next_idx;
+            }
+        };
+
         std.debug.print("Spawning new connection with index: {} \n", .{this_conn_idx});
 
-        // Spawns a new connection in a different coroutine
+        // Spawns a new connection handler in a different coroutine.
         open_conns[this_conn_idx] = async handle_connection(ring, new_conn.res, this_conn_idx, &closed_conns, &num_closed_conns);
-        if (can_reuse_conn) {
-            num_closed_conns -= 1;
-        } else {
-            num_open_conns += 1;
-        }
     }
 
-    // This isn't really needed.
+    // This isn't really needed since this only happens at process shutdown,
+    // but why not.
     for (open_conns[0..num_open_conns]) |conn| {
         await conn;
     }
 }
 
-pub fn server_loop() !void {
-    var ring = try IO_Uring.init(128, 0);
-    defer ring.deinit();
-
-    var async_ring = AsyncIOUring{ .ring = &ring };
-
+pub fn run_server(ring: *AsyncIOUring) !void {
     const address = try net.Address.parseIp4("127.0.0.1", 3131);
     const kernel_backlog = 1;
     const server = try os.socket(address.any.family, os.SOCK_STREAM | os.SOCK_CLOEXEC, 0);
@@ -95,12 +103,16 @@ pub fn server_loop() !void {
     try os.bind(server, &address.any, address.getOsSockLen());
     try os.listen(server, kernel_backlog);
 
-    var acceptor_done = async acceptor(&async_ring, server);
-
-    try async_ring.run_event_loop();
-    try await acceptor_done;
+    try run_acceptor_loop(ring, server);
 }
 
 pub fn main() !void {
-    _ = async server_loop();
+    var ring = try IO_Uring.init(128, 0);
+    defer ring.deinit();
+
+    var async_ring = AsyncIOUring{ .ring = &ring };
+
+    _ = async run_server(&async_ring);
+
+    try async_ring.run_event_loop();
 }

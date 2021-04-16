@@ -45,4 +45,21 @@ pub fn build(b: *std.build.Builder) void {
         const run_step = b.step("run_client", "Run the app");
         run_step.dependOn(&run_cmd.step);
     }
+
+    {
+        const exe = b.addExecutable("async_io_uring_benchmark", "src/benchmark.zig");
+        exe.setTarget(target);
+        exe.setBuildMode(mode);
+        //pkgs.addAllTo(exe);
+        exe.install();
+
+        const run_cmd = exe.run();
+        run_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| {
+            run_cmd.addArgs(args);
+        }
+
+        const run_step = b.step("run_benchmark", "Run the app");
+        run_step.dependOn(&run_cmd.step);
+    }
 }
