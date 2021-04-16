@@ -20,3 +20,13 @@ zig build run_server
 # In a separate shell
 zig build run_client
 ```
+
+To run benchmark:
+To run:
+```sh
+# Run the server
+zig build run_server
+
+# In a separate shell
+zig build run_benchmark
+```
