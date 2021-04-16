@@ -14,7 +14,7 @@ const NoUserData = aiou.NoUserData;
 
 // Currently the number of max connections is hardcoded. This allows you to
 // avoid heap allocation in growing and shrinking the list of active connections.
-const max_connections = 1000;
+const max_connections = 2;
 
 // Does the main echo server loop for a single connection, recieving and
 // echoing input over the file descriptor for the client.
@@ -76,6 +76,8 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t) !void {
                 num_closed_conns -= 1;
                 break :blk closed_conns[num_closed_conns];
             } else {
+                if (num_open_conns == max_connections) break :blk null;
+
                 const next_idx = num_open_conns;
                 // We need to expand the number of open connections.
                 num_open_conns += 1;
@@ -83,10 +85,14 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t) !void {
             }
         };
 
-        std.debug.print("Spawning new connection with index: {} \n", .{this_conn_idx});
-
-        // Spawns a new connection handler in a different coroutine.
-        open_conns[this_conn_idx] = async handle_connection(ring, new_conn_fd, this_conn_idx, &closed_conns, &num_closed_conns);
+        if (this_conn_idx) |idx| {
+            std.debug.print("Spawning new connection with index: {} \n", .{idx});
+            // Spawns a new connection handler in a different coroutine.
+            open_conns[idx] = async handle_connection(ring, new_conn_fd, idx, &closed_conns, &num_closed_conns);
+        } else {
+            std.debug.print("Reached connection limit, refusing connection. \n", .{});
+            _ = try ring.ring.close(0, new_conn_fd);
+        }
     }
 
     // This isn't really needed since this only happens at process shutdown,
