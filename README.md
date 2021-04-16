@@ -13,7 +13,7 @@ Files:
   is non-blocking except for the debug logging :) 
 * `src/benchmark.zig`: A silly benchmarking loop to check throughput from the
   perspective of a client sending "hello" over and over again.
-* `src/async\_io\_uring.zig`: Partially implemented wrapper for IO\_Uring that
+* `src/async_io_uring.zig`: Partially implemented wrapper for `IO_Uring` that
   has versions of its functions that suspend until their results are ready, and
   an event loop that makes it work.  
 

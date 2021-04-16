@@ -14,7 +14,7 @@ const NoUserData = aiou.NoUserData;
 
 // Currently the number of max connections is hardcoded. This allows you to
 // avoid heap allocation in growing and shrinking the list of active connections.
-const max_connections = 2;
+const max_connections = 1000;
 
 // Does the main echo server loop for a single connection, recieving and
 // echoing input over the file descriptor for the client.
