@@ -11,3 +11,12 @@ Files:
 * src/async\_io\_uring.zig: Partially implemented wrapper for IO\_Uring that
   has versions of its functions that suspend until their results are ready, and
   an event loop that makes it work.  
+
+To run:
+```sh
+# Run the server
+zig build run_server
+
+# In a separate shell
+zig build run_client
+```
