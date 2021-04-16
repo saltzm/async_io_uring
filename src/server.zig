@@ -14,11 +14,47 @@ const NoUserData = aiou.NoUserData;
 
 // Currently the number of max connections is hardcoded. This allows you to
 // avoid heap allocation in growing and shrinking the list of active connections.
-const max_connections = 1000;
+const max_connections = 1; // 000;
+
+// A silly type to keep track of which indexes are free in an array with size
+// max_idx.
+fn IndexAllocator(comptime max_idx: usize) type {
+    return struct {
+        const Self = @This();
+        max_idx: usize = max_idx,
+        free_list: [max_idx]u64 = undefined,
+        num_allocated: usize = 0,
+        num_free: usize = 0,
+
+        pub fn alloc(self: *Self) ?usize {
+            if (self.num_free > 0) {
+                self.num_free -= 1;
+                return self.free_list[self.num_free];
+            } else {
+                if (self.num_allocated == max_connections) {
+                    return null;
+                }
+                const next_idx = self.num_allocated;
+                self.num_allocated += 1;
+                return next_idx;
+            }
+        }
+
+        pub fn free(self: *Self, idx: usize) void {
+            self.free_list[self.num_free] = idx;
+            self.num_free += 1;
+        }
+    };
+}
 
 // Does the main echo server loop for a single connection, recieving and
 // echoing input over the file descriptor for the client.
-pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, closed_conns: *[max_connections]u64, num_closed_conns: *usize) !void {
+pub fn handle_connection(
+    ring: *AsyncIOUring,
+    client: os.fd_t,
+    conn_idx_allocator: *IndexAllocator(max_connections),
+    conn_idx: u64,
+) !void {
     defer {
         std.debug.print("Closing connection with index {}\n", .{conn_idx});
         // TODO: Expose close on AsyncIOUring.
@@ -27,8 +63,7 @@ pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, cl
             std.os.exit(1);
         };
         // Return this connection index to the list of free connection indices.
-        closed_conns[num_closed_conns.*] = conn_idx;
-        num_closed_conns.* += 1;
+        conn_idx_allocator.free(conn_idx);
     }
 
     // Used to send and receive.
@@ -51,9 +86,11 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t) !void {
     // TODO: Put this in a struct and abstract away some of the connection
     // tracking.
     var open_conns: [max_connections]@Frame(handle_connection) = undefined;
-    var closed_conns: [max_connections]u64 = undefined;
-    var num_open_conns: usize = 0;
-    var num_closed_conns: usize = 0;
+
+    // Tracks which slots in open_conns are available. Silly way to avoid heap
+    // allocation for open_conns. I can't put open_conns itself in another
+    // struct because @Frame objects aren't copyable.
+    var conn_idx_allocator = IndexAllocator(max_connections){};
 
     while (true) {
         std.debug.print("Accepting\n", .{});
@@ -65,28 +102,19 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t) !void {
         var accept_cqe = try ring.accept(NoUserData, server, &accept_addr, &accept_addr_len, 0);
         var new_conn_fd = accept_cqe.res;
 
-        // TODO: Handle exceeding max_connections.
+        // Get an open slot in open_conns with the IndexAllocator and launch a
+        // coroutine to handle the connection.
+        if (conn_idx_allocator.alloc()) |this_conn_idx| {
+            std.debug.print("Spawning new connection with index: {} \n", .{this_conn_idx});
 
-        // Get an index in the array of open connections for this new
-        // connection.
-        const this_conn_idx = blk: {
-            if (num_closed_conns > 0) {
-                // Reuse the last closed connection's index and decrement the
-                // number of closed connections.
-                num_closed_conns -= 1;
-                break :blk closed_conns[num_closed_conns];
-            } else {
-                const next_idx = num_open_conns;
-                // We need to expand the number of open connections.
-                num_open_conns += 1;
-                break :blk next_idx;
-            }
-        };
-
-        std.debug.print("Spawning new connection with index: {} \n", .{this_conn_idx});
-
-        // Spawns a new connection handler in a different coroutine.
-        open_conns[this_conn_idx] = async handle_connection(ring, new_conn_fd, this_conn_idx, &closed_conns, &num_closed_conns);
+            // Spawns a new connection handler in a different coroutine.
+            open_conns[this_conn_idx] = async handle_connection(ring, new_conn_fd, &conn_idx_allocator, this_conn_idx);
+        } else {
+            std.debug.print("Reached connection limit, refusing connection\n", .{});
+            // We've reached the max number of connections, so close this one
+            // right away.
+            _ = try ring.ring.close(0, new_conn_fd);
+        }
     }
 
     // This isn't really needed since this only happens at process shutdown,
