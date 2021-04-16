@@ -8,9 +8,10 @@ then extract the event loop into its own library if it continues to seem
 useful. This is my first actual Zig project and I love it so far. 
 
 Files:
-* `src/client.zig`: Echo client. 
+* `src/client.zig`: Echo client. All I/O (including reading from stdin) is
+  non-blocking except for the debug logging.
 * `src/server.zig`: Echo server. Handles multiple concurrent connections. All I/O
-  is non-blocking except for the debug logging :) 
+  is non-blocking except for the debug logging.
 * `src/benchmark.zig`: A silly benchmarking loop to check throughput from the
   perspective of a client sending "hello" over and over again.
 * `src/async_io_uring.zig`: Partially implemented wrapper for `IO_Uring` that
