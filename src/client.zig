@@ -5,7 +5,9 @@ const net = std.net;
 const os = std.os;
 const linux = os.linux;
 
-const AsyncIOUring = @import("async_io_uring.zig").AsyncIOUring;
+const aiou = @import("async_io_uring.zig");
+const AsyncIOUring = aiou.AsyncIOUring;
+const NoUserData = aiou.NoUserData;
 
 // Echo client. Reads a string from stdin, sends it to the server, and prints
 // the response.
@@ -26,7 +28,7 @@ pub fn client_loop(ring: *AsyncIOUring) !void {
         };
     }
 
-    const connect_cqe = try ring.connect(client, &address.any, address.getOsSockLen());
+    const connect_cqe = try ring.connect(NoUserData, client, &address.any, address.getOsSockLen());
     assert(connect_cqe.res == 0);
 
     const stdin_file = std.io.getStdIn();
@@ -36,7 +38,7 @@ pub fn client_loop(ring: *AsyncIOUring) !void {
     while (true) {
         std.debug.print("Input: ", .{});
         // Read something from stdin.
-        const read_cqe = try ring.read(stdin_fd, input_buffer[0..], input_buffer.len);
+        const read_cqe = try ring.read(NoUserData, stdin_fd, input_buffer[0..], input_buffer.len);
         if (read_cqe.res < 0) {
             // TODO: Convert these errors into zig errors inside AsyncIOUring.
             break;
@@ -44,13 +46,13 @@ pub fn client_loop(ring: *AsyncIOUring) !void {
         const num_bytes_read = @intCast(usize, read_cqe.res);
 
         // Send it to the server.
-        const send_result = try ring.send(client, input_buffer[0..num_bytes_read], @intCast(u32, num_bytes_read));
+        const send_result = try ring.send(NoUserData, client, input_buffer[0..num_bytes_read], @intCast(u32, num_bytes_read));
         if (send_result.res != num_bytes_read) {
             break;
         }
 
         // Receive response.
-        const recv_cqe = try ring.recv(client, input_buffer[0..], 0);
+        const recv_cqe = try ring.recv(NoUserData, client, input_buffer[0..], 0);
         if (recv_cqe.res <= 0) {
             break;
         }
