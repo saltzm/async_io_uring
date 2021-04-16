@@ -30,7 +30,8 @@ pub fn run_client(ring: *AsyncIOUring) !void {
         };
     }
 
-    const connect_cqe = try ring.connect(NoUserData, server, &address.any, address.getOsSockLen());
+    // Connect to the server.
+    _ = try ring.connect(NoUserData, server, &address.any, address.getOsSockLen());
 
     const stdin_file = std.io.getStdIn();
     const stdin_fd = stdin_file.handle;

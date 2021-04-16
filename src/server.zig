@@ -48,18 +48,22 @@ pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, cl
 // Loops accepting new connections and spawning new coroutines to handle those
 // connections.
 pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t) !void {
+    // TODO: Put this in a struct and abstract away some of the connection
+    // tracking.
     var open_conns: [max_connections]@Frame(handle_connection) = undefined;
     var closed_conns: [max_connections]u64 = undefined;
     var num_open_conns: usize = 0;
     var num_closed_conns: usize = 0;
+
     while (true) {
+        std.debug.print("Accepting\n", .{});
+
         var accept_addr: os.sockaddr = undefined;
         var accept_addr_len: os.socklen_t = @sizeOf(@TypeOf(accept_addr));
 
-        std.debug.print("Accepting\n", .{});
-
         // Wait for a new connection request.
-        var new_conn = try ring.accept(NoUserData, server, &accept_addr, &accept_addr_len, 0);
+        var accept_cqe = try ring.accept(NoUserData, server, &accept_addr, &accept_addr_len, 0);
+        var new_conn_fd = accept_cqe.res;
 
         // Get an index in the array of open connections for this new
         // connection.
@@ -80,7 +84,7 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t) !void {
         std.debug.print("Spawning new connection with index: {} \n", .{this_conn_idx});
 
         // Spawns a new connection handler in a different coroutine.
-        open_conns[this_conn_idx] = async handle_connection(ring, new_conn.res, this_conn_idx, &closed_conns, &num_closed_conns);
+        open_conns[this_conn_idx] = async handle_connection(ring, new_conn_fd, this_conn_idx, &closed_conns, &num_closed_conns);
     }
 
     // This isn't really needed since this only happens at process shutdown,
