@@ -19,7 +19,7 @@ pub const AsyncIOUring = struct {
     /// Returns a pointer to the SQE.
     pub fn accept(
         self: *AsyncIOUring,
-        //        user_data: u64, TODO
+        //        user_data: u64, TODO allow extra user data?
         fd: os.fd_t,
         addr: *os.sockaddr,
         addrlen: *os.socklen_t,

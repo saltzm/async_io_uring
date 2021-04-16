@@ -21,6 +21,7 @@ pub fn benchmark(ring: *AsyncIOUring) !void {
     const cqe_connect = try ring.connect(client, &address.any, address.getOsSockLen());
     assert(cqe_connect.res == 0);
     const buffer_read = "hello";
+    var buffer_recv: [256]u8 = undefined;
 
     var timer = try Timer.start();
     const start = timer.lap();
@@ -33,8 +34,7 @@ pub fn benchmark(ring: *AsyncIOUring) !void {
         const send_result = try ring.send(client, buffer_read[0..num_bytes_read], @intCast(u32, num_bytes_read));
         assert(send_result.res == num_bytes_read);
 
-        // Receive
-        var buffer_recv: [256]u8 = undefined;
+        // Receive the response.
         const cqe_recv = try ring.recv(client, buffer_recv[0..], 0);
         const num_bytes_received = @intCast(usize, cqe_recv.res);
     }
@@ -52,10 +52,11 @@ pub fn client_loop(ring: *AsyncIOUring) !void {
 
     const cqe_connect = try ring.connect(client, &address.any, address.getOsSockLen());
     assert(cqe_connect.res == 0);
-    // Wait for stdin
+
     const stdin_file = std.io.getStdIn();
     const stdin_fd = stdin_file.handle;
     var buffer_read: [256]u8 = undefined;
+    var buffer_recv: [256]u8 = undefined;
 
     while (true) {
         // Read something from stdin. This is async :)
@@ -66,8 +67,7 @@ pub fn client_loop(ring: *AsyncIOUring) !void {
         const send_result = try ring.send(client, buffer_read[0..num_bytes_read], @intCast(u32, num_bytes_read));
         assert(send_result.res == num_bytes_read);
 
-        // Receive
-        var buffer_recv: [256]u8 = undefined;
+        // Receive response.
         const cqe_recv = try ring.recv(client, buffer_recv[0..], 0);
         const num_bytes_received = @intCast(usize, cqe_recv.res);
         std.debug.print("Received: {s}\n", .{buffer_recv[0..num_bytes_received]});
