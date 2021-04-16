@@ -20,20 +20,37 @@ Files:
 # Running the echo client and server
 ```sh
 # Run the server
-zig build run_server
+$ zig build run_server
+
+# Example output when server.zig has max_connections set to 2
+Accepting
+Spawning new connection with index: 0
+Accepting
+Spawning new connection with index: 1
+Accepting
+Reached connection limit, refusing connection.
+Accepting
+Closing connection with index 1
+Closing connection with index 0
 
 # In a separate shell
-zig build run_client
+$ zig build run_client
+#Example output
+Input: hello
+Received: hello
+
+Input: world
+Received: world
 ```
 
 # Running the benchmark
 ```sh
 # Run the server
-zig build run_server -Drelease-fast
+$ zig build run_server -Drelease-fast
 
 # In a separate shell
-zig build run_benchmark -Drelease-fast
+$ zig build run_benchmark -Drelease-fast
 
 # Or for multiple client processes at once (in this case 30):
-for in {0..30}; do zig build run_benchmark -Drelease-fast & done;
+$ for in {0..30}; do zig build run_benchmark -Drelease-fast & done;
 ```
