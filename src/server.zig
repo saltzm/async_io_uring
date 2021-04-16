@@ -65,10 +65,9 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t) !void {
         var accept_cqe = try ring.accept(NoUserData, server, &accept_addr, &accept_addr_len, 0);
         var new_conn_fd = accept_cqe.res;
 
-        // TODO: Handle exceeding max_connections.
-
         // Get an index in the array of open connections for this new
-        // connection.
+        // connection. If we already have max_connections open connections,
+        // this_conn_idx will be null.
         const this_conn_idx = blk: {
             if (num_closed_conns > 0) {
                 // Reuse the last closed connection's index and decrement the
