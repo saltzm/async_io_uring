@@ -10,6 +10,8 @@ const testing = std.testing;
 
 pub const ResumeNode = struct { frame: anyframe = undefined, result: linux.io_uring_cqe = undefined };
 
+// TODO: Update comments to reflect that all functions queue an SQE and suspend until the CQE is ready
+// and resumed by the event loop
 pub const AsyncIOUring = struct {
     ring: *IO_Uring = undefined,
 
@@ -91,6 +93,21 @@ pub const AsyncIOUring = struct {
         _ = try self.ring.read(@ptrToInt(&node), fd, buffer, offset);
         suspend;
         //std.debug.print("Read: {}.\n", .{node.result.res});
+        return node.result;
+    }
+
+    /// Queues (but does not submit) an SQE to perform a `write(2)`.
+    /// Returns a pointer to the SQE.
+    pub fn write(
+        self: *IO_Uring,
+        // user_data: u64,
+        fd: os.fd_t,
+        buffer: []const u8,
+        offset: u64,
+    ) !*io_uring_sqe {
+        var node = ResumeNode{ .frame = @frame(), .result = undefined };
+        _ = try self.ring.write(@ptrToInt(&node), fd, buffer, offset);
+        suspend;
         return node.result;
     }
 

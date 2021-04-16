@@ -31,7 +31,6 @@ pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, cl
         num_closed_conns.* += 1;
     }
 
-    // Receive
     var buffer_recv: [256]u8 = undefined;
 
     while (true) {
@@ -76,7 +75,7 @@ pub fn acceptor(ring: *AsyncIOUring, server: os.fd_t) !void {
         }
     }
 
-    // TODO: Is this really needed?
+    // This isn't really needed.
     for (open_conns[0..num_open_conns]) |conn| {
         await conn;
     }
