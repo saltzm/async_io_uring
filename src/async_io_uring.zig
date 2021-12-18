@@ -58,7 +58,7 @@ pub const AsyncIOUring = struct {
     ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
         _ = try self.ring.accept(@ptrToInt(&node), fd, addr, addrlen, flags);
-        suspend;
+        suspend {}
 
         if (node.result.res < 0) {
             return AsyncIOUringError.UnknownError;
@@ -79,7 +79,7 @@ pub const AsyncIOUring = struct {
     ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
         _ = try self.ring.connect(@ptrToInt(&node), fd, addr, addrlen);
-        suspend;
+        suspend {}
 
         if (node.result.res < 0) {
             return AsyncIOUringError.UnknownError;
@@ -100,7 +100,7 @@ pub const AsyncIOUring = struct {
     ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
         _ = try self.ring.send(@ptrToInt(&node), fd, buffer, flags);
-        suspend;
+        suspend {}
         if (node.result.res <= 0) {
             return AsyncIOUringError.UnknownError;
         }
@@ -120,7 +120,7 @@ pub const AsyncIOUring = struct {
     ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
         _ = try self.ring.recv(@ptrToInt(&node), fd, buffer, flags);
-        suspend;
+        suspend {}
 
         // TODO: Is it ever valid to receive 0 bytes?
         if (node.result.res <= 0) {
@@ -142,7 +142,7 @@ pub const AsyncIOUring = struct {
     ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
         _ = try self.ring.read(@ptrToInt(&node), fd, buffer, offset);
-        suspend;
+        suspend {}
 
         if (node.result.res < 0) {
             return AsyncIOUringError.UnknownError;
@@ -163,7 +163,7 @@ pub const AsyncIOUring = struct {
     ) !*io_uring_sqe {
         var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
         _ = try self.ring.write(@ptrToInt(&node), fd, buffer, offset);
-        suspend;
+        suspend {}
         return node.result;
     }
 
@@ -171,7 +171,7 @@ pub const AsyncIOUring = struct {
     // for completion events. When a completion queue event (cqe) is available, it
     // will resume the coroutine that submitted the request corresponding to that cqe.
     pub fn run_event_loop(self: *AsyncIOUring) !void {
-        var cqes: [256]linux.io_uring_cqe = undefined;
+        var cqes: [4096]linux.io_uring_cqe = undefined;
         // We want our program to resume as soon as any event we've submitted
         // is ready, so we set this to 1.
         const max_num_events_to_wait_for_in_kernel = 1;
