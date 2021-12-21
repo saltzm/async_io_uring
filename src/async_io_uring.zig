@@ -7,11 +7,6 @@ const linux = os.linux;
 // have resume the callers frame.
 const ResumeNode = struct { frame: anyframe = undefined, user_data: u64, result: linux.io_uring_cqe = undefined };
 
-// TODO: This probably violates naming style conventions in zig and is
-// generally kind of wonky. But it's still better at the callsite than random
-// 0s everywhere.
-pub const NoUserData: u64 = 0;
-
 // TODO: Use existing codes and make them more semantically meaningful. This is
 // just a bandaid so that callers don't have to check the 'res' field on CQEs
 // after calling functions on AsyncIOUring.
@@ -50,13 +45,12 @@ pub const AsyncIOUring = struct {
     /// that CQE.
     pub fn accept(
         self: *AsyncIOUring,
-        user_data: u64,
         fd: os.fd_t,
         addr: *os.sockaddr,
         addrlen: *os.socklen_t,
         flags: u32,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
+        var node = ResumeNode{ .frame = @frame(), .user_data = 0, .result = undefined };
         _ = try self.ring.accept(@ptrToInt(&node), fd, addr, addrlen, flags);
         suspend {}
 
@@ -72,12 +66,11 @@ pub const AsyncIOUring = struct {
     /// that CQE.
     pub fn connect(
         self: *AsyncIOUring,
-        user_data: u64,
         fd: os.fd_t,
         addr: *const os.sockaddr,
         addrlen: os.socklen_t,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
+        var node = ResumeNode{ .frame = @frame(), .user_data = 0, .result = undefined };
         _ = try self.ring.connect(@ptrToInt(&node), fd, addr, addrlen);
         suspend {}
 
@@ -93,12 +86,11 @@ pub const AsyncIOUring = struct {
     /// that CQE.
     pub fn send(
         self: *AsyncIOUring,
-        user_data: u64,
         fd: os.fd_t,
         buffer: []const u8,
         flags: u32,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
+        var node = ResumeNode{ .frame = @frame(), .user_data = 0, .result = undefined };
         _ = try self.ring.send(@ptrToInt(&node), fd, buffer, flags);
         suspend {}
         if (node.result.res <= 0) {
@@ -113,12 +105,11 @@ pub const AsyncIOUring = struct {
     /// that CQE.
     pub fn recv(
         self: *AsyncIOUring,
-        user_data: u64,
         fd: os.fd_t,
         buffer: []u8,
         flags: u32,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
+        var node = ResumeNode{ .frame = @frame(), .user_data = 0, .result = undefined };
         _ = try self.ring.recv(@ptrToInt(&node), fd, buffer, flags);
         suspend {}
 
@@ -135,12 +126,11 @@ pub const AsyncIOUring = struct {
     /// that CQE.
     pub fn read(
         self: *AsyncIOUring,
-        user_data: u64,
         fd: os.fd_t,
         buffer: []u8,
         offset: u64,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
+        var node = ResumeNode{ .frame = @frame(), .user_data = 0, .result = undefined };
         _ = try self.ring.read(@ptrToInt(&node), fd, buffer, offset);
         suspend {}
 
@@ -156,12 +146,11 @@ pub const AsyncIOUring = struct {
     /// that CQE.
     pub fn write(
         self: *IO_Uring,
-        user_data: u64,
         fd: os.fd_t,
         buffer: []const u8,
         offset: u64,
     ) !*io_uring_sqe {
-        var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
+        var node = ResumeNode{ .frame = @frame(), .user_data = 0, .result = undefined };
         _ = try self.ring.write(@ptrToInt(&node), fd, buffer, offset);
         suspend {}
         return node.result;

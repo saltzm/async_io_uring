@@ -10,7 +10,6 @@ const testing = std.testing;
 
 const aiou = @import("async_io_uring.zig");
 const AsyncIOUring = aiou.AsyncIOUring;
-const NoUserData = aiou.NoUserData;
 
 // Currently the number of max connections is hardcoded. This allows you to
 // avoid heap allocation in growing and shrinking the list of active connections.
@@ -34,14 +33,16 @@ pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, cl
     // Used to send and receive.
     var buffer: [512]u8 = undefined;
 
+    // TODO: Try out using read_fixed/write_fixed and maybe polling
+
     // Loop until the connection is closed, receiving input and sending back
     // that input as output.
     while (true) {
-        const recv_cqe = try ring.recv(NoUserData, client, buffer[0..], 0);
+        const recv_cqe = try ring.recv(client, buffer[0..], 0);
 
         const num_bytes_received = @intCast(usize, recv_cqe.res);
 
-        _ = try ring.send(NoUserData, client, buffer[0..num_bytes_received], 0);
+        _ = try ring.send(client, buffer[0..num_bytes_received], 0);
     }
 }
 
@@ -62,7 +63,7 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t, id: u64) !void {
         var accept_addr_len: os.socklen_t = @sizeOf(@TypeOf(accept_addr));
 
         // Wait for a new connection request.
-        var accept_cqe = try ring.accept(NoUserData, server, &accept_addr, &accept_addr_len, 0);
+        var accept_cqe = try ring.accept(server, &accept_addr, &accept_addr_len, 0);
         var new_conn_fd = accept_cqe.res;
 
         // Get an index in the array of open connections for this new
@@ -133,7 +134,7 @@ pub fn really_run_server(context: Context) !void {
 }
 
 pub fn main() !void {
-    const num_threads = 40;
+    const num_threads = 20;
     var threads: [num_threads]*std.Thread = undefined;
     var i: u64 = 0;
     while (i < num_threads) : (i += 1) {
