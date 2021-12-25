@@ -145,13 +145,31 @@ pub const AsyncIOUring = struct {
     /// Suspends execution until the resulting CQE is available and returns
     /// that CQE.
     pub fn write(
-        self: *IO_Uring,
+        self: *AsyncIOUring,
         fd: os.fd_t,
         buffer: []const u8,
         offset: u64,
-    ) !*io_uring_sqe {
+    ) !*linux.io_uring_sqe {
         var node = ResumeNode{ .frame = @frame(), .user_data = 0, .result = undefined };
         _ = try self.ring.write(@ptrToInt(&node), fd, buffer, offset);
+        suspend {}
+        return node.result;
+    }
+
+    /// Queues (but does not submit) an SQE to perform a IORING_OP_WRITE_FIXED.
+    /// The `buffer` provided must be registered with the kernel by calling `register_buffers` first.
+    /// The `buffer_index` must be the same as its index in the array provided to `register_buffers`.
+    ///
+    /// Returns a pointer to the SQE so that you can further modify the SQE for advanced use cases.
+    pub fn write_fixed(
+        self: *AsyncIOUring,
+        fd: os.fd_t,
+        buffer: *os.iovec,
+        offset: u64,
+        buffer_index: u16,
+    ) !linux.io_uring_cqe {
+        var node = ResumeNode{ .frame = @frame(), .user_data = 0, .result = undefined };
+        _ = try self.ring.write_fixed(@ptrToInt(&node), fd, buffer, offset, buffer_index);
         suspend {}
         return node.result;
     }

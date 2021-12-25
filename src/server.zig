@@ -16,32 +16,31 @@ const AsyncIOUring = aiou.AsyncIOUring;
 const max_connections = 10000;
 
 pub fn main() !void {
-    const num_threads = 20;
-    var threads: [num_threads]*std.Thread = undefined;
+    const num_threads = 11;
+    var threads: [num_threads]std.Thread = undefined;
     var i: u64 = 0;
     while (i < num_threads) : (i += 1) {
         std.debug.print("Spawning\n", .{});
-        threads[i] = try std.Thread.spawn(really_run_server, Context{.id = i});
+        threads[i] = try std.Thread.spawn(.{}, really_run_server, .{i});
     }
     i = 0;
     while (i < num_threads) : (i += 1) {
         std.debug.print("Joining {}\n", .{i});
-        std.Thread.wait(threads[i]);
+        std.Thread.join(threads[i]);
     }
+    try really_run_server(0);
 }
 
-const Context  = struct { 
-    id: u64
-};
+pub fn really_run_server(id: u64) !void {
+    // Seems slower in first silly test benchmarks
+    // var ring = try IO_Uring.init(4096, linux.IORING_SETUP_SQPOLL);
 
-pub fn really_run_server(context: Context) !void {
-    // std.debug.print("Running ring in thread {}\n", .{context.id});
     var ring = try IO_Uring.init(4096, 0);
     defer ring.deinit();
 
     var async_ring = AsyncIOUring{ .ring = &ring };
 
-    _ = async run_server(&async_ring, context.id);
+    _ = async run_server(&async_ring, id);
 
     try async_ring.run_event_loop();
 }
@@ -52,9 +51,9 @@ pub fn really_run_server(context: Context) !void {
 pub fn run_server(ring: *AsyncIOUring, id: u64) !void {
     const address = try net.Address.parseIp4("127.0.0.1", 3131);
     const kernel_backlog = 1;
-    const server = try os.socket(address.any.family, os.SOCK_STREAM | os.SOCK_CLOEXEC, 0);
+    const server = try os.socket(address.any.family, os.SOCK.STREAM | os.SOCK.CLOEXEC, 0);
     defer os.close(server);
-    try os.setsockopt(server, os.SOL_SOCKET, os.SO_REUSEPORT, &mem.toBytes(@as(c_int, 1)));
+    try os.setsockopt(server, os.SOL.SOCKET, os.SO.REUSEPORT, &mem.toBytes(@as(c_int, 1)));
     try os.bind(server, &address.any, address.getOsSockLen());
     try os.listen(server, kernel_backlog);
 
@@ -63,7 +62,7 @@ pub fn run_server(ring: *AsyncIOUring, id: u64) !void {
 
 // Loops accepting new connections and spawning new coroutines to handle those
 // connections.
-pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t, id: u64) !void {
+pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t, _: u64) !void {
     // TODO: Put this in a struct and abstract away some of the connection
     // tracking.
     var open_conns: [max_connections]@Frame(handle_connection) = undefined;
@@ -117,14 +116,13 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t, id: u64) !void {
     }
 }
 
-
 // Does the main echo server loop for a single connection, recieving and
 // echoing input over the file descriptor for the client.
 pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, closed_conns: *[max_connections]u64, num_closed_conns: *usize) !void {
     defer {
         // std.debug.print("Closing connection with index {}\n", .{conn_idx});
         // TODO: Expose close on AsyncIOUring.
-        _ = ring.ring.close(0, client) catch |err| {
+        _ = ring.ring.close(0, client) catch {
             // std.debug.print("Error closing\n", .{});
             std.os.exit(1);
         };
@@ -136,16 +134,36 @@ pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, cl
     // Used to send and receive.
     var buffer: [512]u8 = undefined;
 
+    //std.debug.print("about to assert\n", .{});
+    //    assert(num_closed_conns.* == 72);
+    //std.debug.print("done asserting \n", .{});
+
     // TODO: Try out using read_fixed/write_fixed and maybe polling
+    //    var buffers = [1]os.iovec{
+    //        .{ .iov_base = &buffer, .iov_len = buffer.len },
+    //        //.{ .iov_base = &raw_buffers[1], .iov_len = raw_buffers[1].len },
+    //    };
+    // TODO Doesn't exist till zig 0.9.0
+    //try ring.ring.register_buffers(&buffers);
+
+    //    const sqe_write = try ring.write_fixed(0x45454545, fd, &buffers[0], 3, 0);
 
     // Loop until the connection is closed, receiving input and sending back
     // that input as output.
     while (true) {
         const recv_cqe = try ring.recv(client, buffer[0..], 0);
+        // _ = try ring.recv(client, buffer[0..], 0);
+        // std.time.sleep(50000);
+        //const start = std.time.nanoTimestamp();
+        //while (std.time.nanoTimestamp() - start < 50 * ns_per_us) {  }
 
         const num_bytes_received = @intCast(usize, recv_cqe.res);
-
         _ = try ring.send(client, buffer[0..num_bytes_received], 0);
+
+        // buffers[0].iov_len = num_bytes_received;
+
+        // _ = try ring.write_fixed(client, &buffers[0], 0, // file offset
+        //     0 // buffer index
+        // );
     }
 }
-

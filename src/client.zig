@@ -16,14 +16,14 @@ const AsyncIOUring = aiou.AsyncIOUring;
 // complete.
 pub fn run_client(ring: *AsyncIOUring) !void {
     // Address of the echo server.
-    const address = try net.Address.parseIp4("127.0.0.1",3131);
+    const address = try net.Address.parseIp4("127.0.0.1", 3131);
 
     // Open a socket for connecting to the server.
-    const server = try os.socket(address.any.family, os.SOCK_STREAM | os.SOCK_CLOEXEC, 0);
+    const server = try os.socket(address.any.family, os.SOCK.STREAM | os.SOCK.CLOEXEC, 0);
     defer {
         std.debug.print("Closing connection\n", .{});
         // TODO: Expose close on AsyncIOUring.
-        _ = ring.ring.close(0, server) catch |err| {
+        _ = ring.ring.close(0, server) catch {
             std.debug.print("Error closing\n", .{});
             std.os.exit(1);
         };
@@ -43,7 +43,7 @@ pub fn run_client(ring: *AsyncIOUring) !void {
         const num_bytes_read = @intCast(usize, read_cqe.res);
 
         // Send it to the server.
-        const send_result = try ring.send(server, input_buffer[0..num_bytes_read], 0);
+        _ = try ring.send(server, input_buffer[0..num_bytes_read], 0);
 
         // Receive response.
         const recv_cqe = try ring.recv(server, input_buffer[0..], 0);
