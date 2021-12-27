@@ -11,38 +11,44 @@ const Timer = std.time.Timer;
 
 const aiou = @import("async_io_uring.zig");
 const AsyncIOUring = aiou.AsyncIOUring;
-const NoUserData = aiou.NoUserData;
 
 // Silly echo server benchmark that sends "hello" 100k times in a loop and then
 // outputs throughput.
 pub fn benchmark(ring: *AsyncIOUring) !void {
     const address = try net.Address.parseIp4("127.0.0.1", 3131);
 
-    const client = try os.socket(address.any.family, os.SOCK_STREAM | os.SOCK_CLOEXEC, 0);
-    defer os.close(client);
-
-    const cqe_connect = try ring.connect(NoUserData, client, &address.any, address.getOsSockLen());
-    assert(cqe_connect.res == 0);
-    const buffer_to_send = "hello";
-    const num_bytes_to_send = buffer_to_send.len;
-    var input_buffer: [256]u8 = undefined;
-
+    var num_clients: u64 = 0;
+    const max_clients = 1;
     var timer = try Timer.start();
     const start = timer.lap();
-    var num_ops: u64 = 0;
+    const buffer_to_send = "hello";
+    const num_bytes_to_send = buffer_to_send.len;
     const max_ops = 100000;
-    while (num_ops < max_ops) : (num_ops += 1) {
-        // Send it to the server.
-        const send_result = try ring.send(NoUserData, client, buffer_to_send[0..num_bytes_to_send], @intCast(u32, num_bytes_to_send));
-        assert(send_result.res == num_bytes_to_send);
 
-        // Receive the response.
-        const cqe_recv = try ring.recv(NoUserData, client, input_buffer[0..], 0);
-        const num_bytes_received = @intCast(usize, cqe_recv.res);
+    while (num_clients < max_clients) : (num_clients += 1) {
+        const client = try os.socket(address.any.family, os.SOCK.STREAM | os.SOCK.CLOEXEC, 0);
+        defer os.close(client);
+
+        const cqe_connect = try ring.connect(client, &address.any, address.getOsSockLen());
+        assert(cqe_connect.res == 0);
+        var input_buffer: [256]u8 = undefined;
+
+        var num_ops: u64 = 0;
+        while (num_ops < max_ops) : (num_ops += 1) {
+            // Send it to the server.
+            const send_result = try ring.send(client, buffer_to_send[0..num_bytes_to_send], @intCast(u32, num_bytes_to_send));
+            assert(send_result.res == num_bytes_to_send);
+
+            // Receive the response.
+            const cqe_recv = try ring.recv(client, input_buffer[0..], 0);
+            const num_bytes_received = @intCast(usize, cqe_recv.res);
+            // TODO
+            assert(num_bytes_received == num_bytes_to_send - 1);
+        }
     }
     const end = timer.read();
     const elapsed_s = @intToFloat(f64, end - start) / std.time.ns_per_s;
-    const ops_per_sec = max_ops / elapsed_s;
+    const ops_per_sec = @intToFloat(f64, max_ops * num_clients) / elapsed_s;
     std.debug.print("throughput: {d} ops per sec\n", .{ops_per_sec});
 }
 

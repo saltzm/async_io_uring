@@ -7,7 +7,6 @@ const linux = os.linux;
 
 const aiou = @import("async_io_uring.zig");
 const AsyncIOUring = aiou.AsyncIOUring;
-const NoUserData = aiou.NoUserData;
 
 // Echo client. Reads a string from stdin, sends it to the server, and prints
 // the response.
@@ -20,18 +19,18 @@ pub fn run_client(ring: *AsyncIOUring) !void {
     const address = try net.Address.parseIp4("127.0.0.1", 3131);
 
     // Open a socket for connecting to the server.
-    const server = try os.socket(address.any.family, os.SOCK_STREAM | os.SOCK_CLOEXEC, 0);
+    const server = try os.socket(address.any.family, os.SOCK.STREAM | os.SOCK.CLOEXEC, 0);
     defer {
         std.debug.print("Closing connection\n", .{});
         // TODO: Expose close on AsyncIOUring.
-        _ = ring.ring.close(0, server) catch |err| {
+        _ = ring.ring.close(0, server) catch {
             std.debug.print("Error closing\n", .{});
             std.os.exit(1);
         };
     }
 
     // Connect to the server.
-    _ = try ring.connect(NoUserData, server, &address.any, address.getOsSockLen());
+    _ = try ring.connect(server, &address.any, address.getOsSockLen());
 
     const stdin_file = std.io.getStdIn();
     const stdin_fd = stdin_file.handle;
@@ -40,14 +39,14 @@ pub fn run_client(ring: *AsyncIOUring) !void {
     while (true) {
         // Read a line from stdin.
         std.debug.print("Input: ", .{});
-        const read_cqe = try ring.read(NoUserData, stdin_fd, input_buffer[0..], input_buffer.len);
+        const read_cqe = try ring.read(stdin_fd, input_buffer[0..], input_buffer.len);
         const num_bytes_read = @intCast(usize, read_cqe.res);
 
         // Send it to the server.
-        const send_result = try ring.send(NoUserData, server, input_buffer[0..num_bytes_read], 0);
+        _ = try ring.send(server, input_buffer[0..num_bytes_read], 0);
 
         // Receive response.
-        const recv_cqe = try ring.recv(NoUserData, server, input_buffer[0..], 0);
+        const recv_cqe = try ring.recv(server, input_buffer[0..], 0);
         const num_bytes_received = @intCast(usize, recv_cqe.res);
         std.debug.print("Received: {s}\n", .{input_buffer[0..num_bytes_received]});
     }

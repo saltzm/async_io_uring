@@ -15,8 +15,7 @@ pub fn build(b: *std.build.Builder) void {
     {
         const server_exe = b.addExecutable("async_io_uring_server", "src/server.zig");
         server_exe.setTarget(target);
-        server_exe.setBuildMode(mode);
-        //pkgs.addAllTo(server_exe);
+        server_exe.setBuildMode(mode); //pkgs.addAllTo(server_exe);
         server_exe.install();
 
         const run_cmd = server_exe.run();

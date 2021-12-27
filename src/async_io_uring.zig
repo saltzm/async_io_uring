@@ -7,11 +7,6 @@ const linux = os.linux;
 // have resume the callers frame.
 const ResumeNode = struct { frame: anyframe = undefined, user_data: u64, result: linux.io_uring_cqe = undefined };
 
-// TODO: This probably violates naming style conventions in zig and is
-// generally kind of wonky. But it's still better at the callsite than random
-// 0s everywhere.
-pub const NoUserData: u64 = 0;
-
 // TODO: Use existing codes and make them more semantically meaningful. This is
 // just a bandaid so that callers don't have to check the 'res' field on CQEs
 // after calling functions on AsyncIOUring.
@@ -50,15 +45,14 @@ pub const AsyncIOUring = struct {
     /// that CQE.
     pub fn accept(
         self: *AsyncIOUring,
-        user_data: u64,
         fd: os.fd_t,
         addr: *os.sockaddr,
         addrlen: *os.socklen_t,
         flags: u32,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
+        var node = ResumeNode{ .frame = @frame(), .user_data = 0, .result = undefined };
         _ = try self.ring.accept(@ptrToInt(&node), fd, addr, addrlen, flags);
-        suspend;
+        suspend {}
 
         if (node.result.res < 0) {
             return AsyncIOUringError.UnknownError;
@@ -72,14 +66,13 @@ pub const AsyncIOUring = struct {
     /// that CQE.
     pub fn connect(
         self: *AsyncIOUring,
-        user_data: u64,
         fd: os.fd_t,
         addr: *const os.sockaddr,
         addrlen: os.socklen_t,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
+        var node = ResumeNode{ .frame = @frame(), .user_data = 0, .result = undefined };
         _ = try self.ring.connect(@ptrToInt(&node), fd, addr, addrlen);
-        suspend;
+        suspend {}
 
         if (node.result.res < 0) {
             return AsyncIOUringError.UnknownError;
@@ -93,14 +86,13 @@ pub const AsyncIOUring = struct {
     /// that CQE.
     pub fn send(
         self: *AsyncIOUring,
-        user_data: u64,
         fd: os.fd_t,
         buffer: []const u8,
         flags: u32,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
+        var node = ResumeNode{ .frame = @frame(), .user_data = 0, .result = undefined };
         _ = try self.ring.send(@ptrToInt(&node), fd, buffer, flags);
-        suspend;
+        suspend {}
         if (node.result.res <= 0) {
             return AsyncIOUringError.UnknownError;
         }
@@ -113,14 +105,13 @@ pub const AsyncIOUring = struct {
     /// that CQE.
     pub fn recv(
         self: *AsyncIOUring,
-        user_data: u64,
         fd: os.fd_t,
         buffer: []u8,
         flags: u32,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
+        var node = ResumeNode{ .frame = @frame(), .user_data = 0, .result = undefined };
         _ = try self.ring.recv(@ptrToInt(&node), fd, buffer, flags);
-        suspend;
+        suspend {}
 
         // TODO: Is it ever valid to receive 0 bytes?
         if (node.result.res <= 0) {
@@ -135,14 +126,13 @@ pub const AsyncIOUring = struct {
     /// that CQE.
     pub fn read(
         self: *AsyncIOUring,
-        user_data: u64,
         fd: os.fd_t,
         buffer: []u8,
         offset: u64,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
+        var node = ResumeNode{ .frame = @frame(), .user_data = 0, .result = undefined };
         _ = try self.ring.read(@ptrToInt(&node), fd, buffer, offset);
-        suspend;
+        suspend {}
 
         if (node.result.res < 0) {
             return AsyncIOUringError.UnknownError;
@@ -155,15 +145,32 @@ pub const AsyncIOUring = struct {
     /// Suspends execution until the resulting CQE is available and returns
     /// that CQE.
     pub fn write(
-        self: *IO_Uring,
-        user_data: u64,
+        self: *AsyncIOUring,
         fd: os.fd_t,
         buffer: []const u8,
         offset: u64,
-    ) !*io_uring_sqe {
-        var node = ResumeNode{ .frame = @frame(), .user_data = user_data, .result = undefined };
+    ) !*linux.io_uring_sqe {
+        var node = ResumeNode{ .frame = @frame(), .user_data = 0, .result = undefined };
         _ = try self.ring.write(@ptrToInt(&node), fd, buffer, offset);
-        suspend;
+        suspend {}
+        return node.result;
+    }
+
+    /// Queues (but does not submit) an SQE to perform a IORING_OP_WRITE_FIXED.
+    /// The `buffer` provided must be registered with the kernel by calling `register_buffers` first.
+    /// The `buffer_index` must be the same as its index in the array provided to `register_buffers`.
+    ///
+    /// Returns a pointer to the SQE so that you can further modify the SQE for advanced use cases.
+    pub fn write_fixed(
+        self: *AsyncIOUring,
+        fd: os.fd_t,
+        buffer: *os.iovec,
+        offset: u64,
+        buffer_index: u16,
+    ) !linux.io_uring_cqe {
+        var node = ResumeNode{ .frame = @frame(), .user_data = 0, .result = undefined };
+        _ = try self.ring.write_fixed(@ptrToInt(&node), fd, buffer, offset, buffer_index);
+        suspend {}
         return node.result;
     }
 
@@ -171,7 +178,7 @@ pub const AsyncIOUring = struct {
     // for completion events. When a completion queue event (cqe) is available, it
     // will resume the coroutine that submitted the request corresponding to that cqe.
     pub fn run_event_loop(self: *AsyncIOUring) !void {
-        var cqes: [256]linux.io_uring_cqe = undefined;
+        var cqes: [4096]linux.io_uring_cqe = undefined;
         // We want our program to resume as soon as any event we've submitted
         // is ready, so we set this to 1.
         const max_num_events_to_wait_for_in_kernel = 1;
