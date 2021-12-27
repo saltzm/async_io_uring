@@ -16,23 +16,21 @@ const AsyncIOUring = aiou.AsyncIOUring;
 const max_connections = 10000;
 
 pub fn main() !void {
-    // const num_threads = 20;
-    // var threads: [num_threads]std.Thread = undefined;
-    // var i: u64 = 0;
-    // while (i < num_threads) : (i += 1) {
-    //     std.debug.print("Spawning\n", .{});
-    //     threads[i] = try std.Thread.spawn(.{}, run_server_event_loop, .{i});
-    // }
+    const num_threads = 20;
+    var threads: [num_threads]std.Thread = undefined;
+    var i: u64 = 0;
+    while (i < num_threads) : (i += 1) {
+        std.debug.print("Spawning\n", .{});
+        threads[i] = try std.Thread.spawn(.{}, run_server_event_loop, .{i});
+    }
 
-    // i = 0;
+    i = 0;
 
-    // // TODO Do this a better way.
-    // while (i < num_threads) : (i += 1) {
-    //     std.debug.print("Joining {}\n", .{i});
-    //     std.Thread.join(threads[i]);
-    // }
-
-    try run_server_event_loop(0);
+    // TODO Do this a better way.
+    while (i < num_threads) : (i += 1) {
+        std.debug.print("Joining {}\n", .{i});
+        std.Thread.join(threads[i]);
+    }
 }
 
 pub fn run_server_event_loop(id: u64) !void {
@@ -42,6 +40,8 @@ pub fn run_server_event_loop(id: u64) !void {
     var async_ring = AsyncIOUring{ .ring = &ring };
 
     _ = async run_server(&async_ring, id);
+
+    //    @compileLog(@sizeOf(@Frame(run_server)));
 
     try async_ring.run_event_loop();
 }
