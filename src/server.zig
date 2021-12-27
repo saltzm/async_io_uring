@@ -16,7 +16,7 @@ const AsyncIOUring = aiou.AsyncIOUring;
 const max_connections = 10000;
 
 pub fn main() !void {
-    const num_threads = 20;
+    const num_threads = 10;
     var threads: [num_threads]std.Thread = undefined;
     var i: u64 = 0;
     while (i < num_threads) : (i += 1) {
@@ -40,8 +40,6 @@ pub fn run_server_event_loop(id: u64) !void {
     var async_ring = AsyncIOUring{ .ring = &ring };
 
     _ = async run_server(&async_ring, id);
-
-    //    @compileLog(@sizeOf(@Frame(run_server)));
 
     try async_ring.run_event_loop();
 }
