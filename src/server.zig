@@ -16,7 +16,7 @@ const AsyncIOUring = aiou.AsyncIOUring;
 const max_connections = 10000;
 
 pub fn main() !void {
-    const num_threads = 10;
+    const num_threads = 16;
     var threads: [num_threads]std.Thread = undefined;
     var i: u64 = 0;
     while (i < num_threads) : (i += 1) {
@@ -31,6 +31,7 @@ pub fn main() !void {
         std.debug.print("Joining {}\n", .{i});
         std.Thread.join(threads[i]);
     }
+    // try run_server_event_loop(0);
 }
 
 pub fn run_server_event_loop(id: u64) !void {
@@ -76,7 +77,11 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t, _: u64) !void {
         var accept_addr_len: os.socklen_t = @sizeOf(@TypeOf(accept_addr));
 
         // Wait for a new connection request.
-        var accept_cqe = try ring.accept(server, &accept_addr, &accept_addr_len, 0);
+        var accept_cqe = ring.accept(server, &accept_addr, &accept_addr_len, 0) catch |err| {
+            std.debug.print("Error in run_acceptor_loop: accept {} \n", .{err});
+            continue;
+        };
+
         var new_conn_fd = accept_cqe.res;
 
         // Get an index in the array of open connections for this new
@@ -129,6 +134,9 @@ pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, cl
         closed_conns[num_closed_conns.*] = conn_idx;
         num_closed_conns.* += 1;
     }
+    errdefer {
+        std.debug.print("Error in handle_connection\n", .{});
+    }
 
     // Used to send and receive.
     var buffer: [512]u8 = undefined;
@@ -136,8 +144,16 @@ pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, cl
     // Loop until the connection is closed, receiving input and sending back
     // that input as output.
     while (true) {
-        const recv_cqe = try ring.recv(client, buffer[0..], 0);
+        const recv_cqe = ring.recv(client, buffer[0..], 0) catch |err| {
+            std.debug.print("Error in handle_connection: recv {} \n", .{err});
+            return err;
+        };
         const num_bytes_received = @intCast(usize, recv_cqe.res);
-        _ = try ring.send(client, buffer[0..num_bytes_received], 0);
+        //        const start = std.time.nanoTimestamp();
+        //        while (std.time.nanoTimestamp() - start < 10 * std.time.ns_per_us) {}
+        _ = ring.send(client, buffer[0..num_bytes_received], 0) catch |err| {
+            std.debug.print("Error in handle_connection: send {} \n", .{err});
+            return err;
+        };
     }
 }
