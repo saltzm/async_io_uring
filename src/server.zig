@@ -126,8 +126,8 @@ pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, cl
     defer {
         // std.debug.print("Closing connection with index {}\n", .{conn_idx});
         // TODO: Expose close on AsyncIOUring.
-        _ = ring.ring.close(0, client) catch {
-            std.debug.print("Error closing\n", .{});
+        _ = ring.close(client) catch |err| {
+            std.debug.print("Error closing {}\n", .{err});
             std.os.exit(1);
         };
         // Return this connection index to the list of free connection indices.

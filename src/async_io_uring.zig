@@ -142,9 +142,9 @@ pub const AsyncIOUring = struct {
             _ = self.ring.read(@ptrToInt(&node), fd, buffer, offset) catch |err| {
                 switch (err) {
                     error.SubmissionQueueFull => {
-                        const num_submitted = try self.ring.submit();
+                        const num_submitted = try self.ring.submit_and_wait(1);
                         self.num_outstanding_events += num_submitted;
-                        // Try again and hope we have enough space now.
+                        // Try again - we should have enough space now.
                         continue;
                     },
                     else => {
@@ -328,16 +328,29 @@ pub const AsyncIOUring = struct {
         flags: u32,
     ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try self.ring.accept(@ptrToInt(&node), fd, addr, addrlen, flags);
-        suspend {}
-
         while (true) {
-            if (node.result.res > 0) {
-                break;
-            } else if (node.result.res == 0) {
-                continue;
-            } else if (node.result.res < 0) {
-                // More or less copied from https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L480-L497.
+            _ = self.ring.accept(@ptrToInt(&node), fd, addr, addrlen, flags) catch |err| {
+                switch (err) {
+                    error.SubmissionQueueFull => {
+                        const num_submitted = try self.ring.submit_and_wait(1);
+                        self.num_outstanding_events += num_submitted;
+                        // Try again - we should have enough space now.
+                        continue;
+                    },
+                    else => {
+                        // Return all other errors to the caller.
+                        return err;
+                    },
+                }
+            };
+
+            suspend {}
+
+            if (node.result.res >= 0) {
+                return node.result;
+            } else {
+                // More or less copied from
+                // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L480-L497.
                 return switch (@intToEnum(os.E, -node.result.res)) {
                     .INTR => continue,
                     .AGAIN => error.WouldBlock,
@@ -358,8 +371,6 @@ pub const AsyncIOUring = struct {
                 };
             }
         }
-
-        return node.result;
     }
 
     /// Queue (but does not submit) an SQE to perform a `connect(2)` on a socket.
@@ -373,13 +384,25 @@ pub const AsyncIOUring = struct {
     ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         while (true) {
-            _ = try self.ring.connect(@ptrToInt(&node), fd, addr, addrlen);
+            _ = self.ring.connect(@ptrToInt(&node), fd, addr, addrlen) catch |err| {
+                switch (err) {
+                    error.SubmissionQueueFull => {
+                        const num_submitted = try self.ring.submit_and_wait(1);
+                        self.num_outstanding_events += num_submitted;
+                        // Try again - we should have enough space now.
+                        continue;
+                    },
+                    else => {
+                        // Return all other errors to the caller.
+                        return err;
+                    },
+                }
+            };
+
             suspend {}
 
-            if (node.result.res > 0) {
-                break;
-            } else if (node.result.res == 0) {
-                continue;
+            if (node.result.res >= 0) {
+                return node.result;
             } else {
                 // More or less copied from
                 // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L682-L704.
@@ -407,8 +430,6 @@ pub const AsyncIOUring = struct {
                 };
             }
         }
-
-        return node.result;
     }
 
     /// Queues (but does not submit) an SQE to perform a `epoll_ctl(2)`.
@@ -443,12 +464,25 @@ pub const AsyncIOUring = struct {
     ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         while (true) {
-            _ = try self.ring.recv(@ptrToInt(&node), fd, buffer, flags);
+            _ = self.ring.recv(@ptrToInt(&node), fd, buffer, flags) catch |err| {
+                switch (err) {
+                    error.SubmissionQueueFull => {
+                        const num_submitted = try self.ring.submit_and_wait(1);
+                        self.num_outstanding_events += num_submitted;
+                        // Try again - we should have enough space now.
+                        continue;
+                    },
+                    else => {
+                        // Return all other errors to the caller.
+                        return err;
+                    },
+                }
+            };
+
             suspend {}
-            if (node.result.res > 0) {
-                break;
-            } else if (node.result.res == 0) {
-                continue;
+
+            if (node.result.res >= 0) {
+                return node.result;
             } else {
                 // More or less copied from
                 // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L546-L559.
@@ -468,8 +502,6 @@ pub const AsyncIOUring = struct {
                 };
             }
         }
-
-        return node.result;
     }
 
     /// Queues (but does not submit) an SQE to perform a `send(2)`.
@@ -483,15 +515,26 @@ pub const AsyncIOUring = struct {
     ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         while (true) {
-            _ = try self.ring.send(@ptrToInt(&node), fd, buffer, flags);
+            _ = self.ring.send(@ptrToInt(&node), fd, buffer, flags) catch |err| {
+                switch (err) {
+                    error.SubmissionQueueFull => {
+                        const num_submitted = try self.ring.submit_and_wait(1);
+                        self.num_outstanding_events += num_submitted;
+                        // Try again - we should have enough space now.
+                        continue;
+                    },
+                    else => {
+                        // Return all other errors to the caller.
+                        return err;
+                    },
+                }
+            };
+
             suspend {}
 
-            if (node.result.res > 0) {
+            if (node.result.res >= 0) {
                 // Success.
-                break;
-            } else if (node.result.res == 0) {
-                // Retryable error - try again.
-                continue;
+                return node.result;
             } else {
                 // More or less copied from https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L604-L632.
                 return switch (@intToEnum(os.E, -node.result.res)) {
@@ -525,7 +568,6 @@ pub const AsyncIOUring = struct {
                 };
             }
         }
-        return node.result;
     }
 
     /// Queues (but does not submit) an SQE to perform an `openat(2)`.
@@ -551,17 +593,33 @@ pub const AsyncIOUring = struct {
 
     /// Queues (but does not submit) an SQE to perform a `close(2)`.
     /// Returns a pointer to the SQE.
-    pub fn close(self: *AsyncIOUring, fd: os.fd_t) !*linux.io_uring_cqe {
+    pub fn close(self: *AsyncIOUring, fd: os.fd_t) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try self.ring.close(@ptrToInt(&node), fd);
-        suspend {}
+        while (true) {
+            _ = self.ring.close(@ptrToInt(&node), fd) catch |err| {
+                switch (err) {
+                    error.SubmissionQueueFull => {
+                        const num_submitted = try self.ring.submit_and_wait(1);
+                        self.num_outstanding_events += num_submitted;
+                        // Try again - we should have enough space now.
+                        continue;
+                    },
+                    else => {
+                        // Return all other errors to the caller.
+                        return err;
+                    },
+                }
+            };
 
-        // TODO
-        if (node.result.res < 0) {
-            return AsyncIOUringError.UnknownError;
+            suspend {}
+
+            if (node.result.res >= 0) {
+                return node.result;
+            } else {
+                // TODO
+                return AsyncIOUringError.UnknownError;
+            }
         }
-
-        return node.result;
     }
 
     /// Queues (but does not submit) an SQE to register a timeout operation.
@@ -612,10 +670,8 @@ pub const AsyncIOUring = struct {
             _ = try self.ring.poll_add(@ptrToInt(&node), fd, poll_mask);
             suspend {}
 
-            if (node.result.res > 0) {
-                break;
-            } else if (node.result.res == 0) {
-                continue;
+            if (node.result.res >= 0) {
+                return node.result;
             } else {
                 // More or less copied from
                 // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L748-L756
@@ -630,8 +686,6 @@ pub const AsyncIOUring = struct {
                 };
             }
         }
-
-        return node.result;
     }
 
     // TODO poll_remove, poll_update, which require user_data from poll_add

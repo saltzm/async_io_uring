@@ -30,7 +30,10 @@ pub fn run_client(ring: *AsyncIOUring) !void {
     }
 
     // Connect to the server.
-    _ = try ring.connect(server, &address.any, address.getOsSockLen());
+    _ = ring.connect(server, &address.any, address.getOsSockLen()) catch |err| {
+        std.debug.print("Error in run_client: connect {} \n", .{err});
+        return err;
+    };
 
     const stdin_file = std.io.getStdIn();
     const stdin_fd = stdin_file.handle;
@@ -39,14 +42,25 @@ pub fn run_client(ring: *AsyncIOUring) !void {
     while (true) {
         // Read a line from stdin.
         std.debug.print("Input: ", .{});
-        const read_cqe = try ring.read(stdin_fd, input_buffer[0..], input_buffer.len);
+        const read_cqe = ring.read(stdin_fd, input_buffer[0..], input_buffer.len) catch |err| {
+            std.debug.print("Error in run_client: read {} \n", .{err});
+            return err;
+        };
+
         const num_bytes_read = @intCast(usize, read_cqe.res);
 
         // Send it to the server.
-        _ = try ring.send(server, input_buffer[0..num_bytes_read], 0);
+        _ = ring.send(server, input_buffer[0..num_bytes_read], 0) catch |err| {
+            std.debug.print("Error in run_client: send {} \n", .{err});
+            return err;
+        };
 
         // Receive response.
-        const recv_cqe = try ring.recv(server, input_buffer[0..], 0);
+        const recv_cqe = ring.recv(server, input_buffer[0..], 0) catch |err| {
+            std.debug.print("Error in run_client: recv {} \n", .{err});
+            return err;
+        };
+
         const num_bytes_received = @intCast(usize, recv_cqe.res);
         std.debug.print("Received: {s}\n", .{input_buffer[0..num_bytes_received]});
     }
