@@ -94,7 +94,7 @@ pub const AsyncIOUring = struct {
     /// apply to the write, since the fsync may complete before the write is issued to the disk.
     /// You should preferably use `link_with_next_sqe()` on a write's SQE to link it with an fsync,
     /// or else insert a full write barrier using `drain_previous_sqes()` when queueing an fsync.
-    pub fn fsync(self: *AsyncIOUring, fd: os.fd_t, flags: u32) !*linux.io_uring_cqe {
+    pub fn fsync(self: *AsyncIOUring, fd: os.fd_t, flags: u32) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         // TODO: Allow user to pass a callback to modify the fsync SQE for
         // advanced cases.
@@ -234,7 +234,7 @@ pub const AsyncIOUring = struct {
         fd: os.fd_t,
         iovecs: []const os.iovec,
         offset: u64,
-    ) !*linux.io_uring_cqe {
+    ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.readv(@ptrToInt(&node), fd, iovecs, offset);
         suspend {}
@@ -258,7 +258,7 @@ pub const AsyncIOUring = struct {
         buffer: *os.iovec,
         offset: u64,
         buffer_index: u16,
-    ) !*linux.io_uring_cqe {
+    ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.read_fixed(@ptrToInt(&node), fd, buffer, offset, buffer_index);
         suspend {}
@@ -280,7 +280,7 @@ pub const AsyncIOUring = struct {
         fd: os.fd_t,
         iovecs: []const os.iovec_const,
         offset: u64,
-    ) !*linux.io_uring_cqe {
+    ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.writev(@ptrToInt(&node), fd, iovecs, offset);
         suspend {}
@@ -440,7 +440,7 @@ pub const AsyncIOUring = struct {
         fd: os.fd_t,
         op: u32,
         ev: ?*linux.epoll_event,
-    ) !*linux.io_uring_cqe {
+    ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.epoll_ctl(@ptrToInt(&node), epfd, fd, op, ev);
         suspend {}
@@ -578,7 +578,7 @@ pub const AsyncIOUring = struct {
         path: [*:0]const u8,
         flags: u32,
         mode: os.mode_t,
-    ) !*linux.io_uring_cqe {
+    ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.openat(@ptrToInt(&node), fd, path, flags, mode);
         suspend {}
@@ -640,7 +640,7 @@ pub const AsyncIOUring = struct {
         ts: *const os.linux.kernel_timespec,
         count: u32,
         flags: u32,
-    ) !*linux.io_uring_cqe {
+    ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.timeout(@ptrToInt(&node), ts, count, flags);
         suspend {}
@@ -664,7 +664,7 @@ pub const AsyncIOUring = struct {
         self: *AsyncIOUring,
         fd: os.fd_t,
         poll_mask: u32,
-    ) !*linux.io_uring_cqe {
+    ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         while (true) {
             _ = try self.ring.poll_add(@ptrToInt(&node), fd, poll_mask);
@@ -698,7 +698,7 @@ pub const AsyncIOUring = struct {
         mode: i32,
         offset: u64,
         len: u64,
-    ) !*linux.io_uring_cqe {
+    ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.fallocate(@ptrToInt(&node), fd, mode, offset, len);
         suspend {}
@@ -720,7 +720,7 @@ pub const AsyncIOUring = struct {
         flags: u32,
         mask: u32,
         buf: *linux.Statx,
-    ) !*linux.io_uring_cqe {
+    ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.statx(@ptrToInt(&node), fd, path, flags, mask, buf);
         suspend {}
@@ -743,7 +743,7 @@ pub const AsyncIOUring = struct {
         self: *AsyncIOUring,
         sockfd: os.socket_t,
         how: u32,
-    ) !*linux.io_uring_cqe {
+    ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.shutdown(@ptrToInt(&node), sockfd, how);
         suspend {}
@@ -765,7 +765,7 @@ pub const AsyncIOUring = struct {
         new_dir_fd: os.fd_t,
         new_path: [*:0]const u8,
         flags: u32,
-    ) !*linux.io_uring_cqe {
+    ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.renameat(@ptrToInt(&node), old_dir_fd, old_path, new_dir_fd, new_path, flags);
         suspend {}
@@ -785,7 +785,7 @@ pub const AsyncIOUring = struct {
         dir_fd: os.fd_t,
         path: [*:0]const u8,
         flags: u32,
-    ) !*linux.io_uring_cqe {
+    ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.unlinkat(@ptrToInt(&node), dir_fd, path, flags);
         suspend {}
@@ -805,7 +805,7 @@ pub const AsyncIOUring = struct {
         dir_fd: os.fd_t,
         path: [*:0]const u8,
         mode: os.mode_t,
-    ) !*linux.io_uring_cqe {
+    ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.mkdirat(@ptrToInt(&node), dir_fd, path, mode);
         suspend {}
@@ -825,7 +825,7 @@ pub const AsyncIOUring = struct {
         target: [*:0]const u8,
         new_dir_fd: os.fd_t,
         link_path: [*:0]const u8,
-    ) !*linux.io_uring_cqe {
+    ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.symlinkat(@ptrToInt(&node), target, new_dir_fd, link_path);
         suspend {}
@@ -847,7 +847,7 @@ pub const AsyncIOUring = struct {
         new_dir_fd: os.fd_t,
         new_path: [*:0]const u8,
         flags: u32,
-    ) !*linux.io_uring_cqe {
+    ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         _ = try self.ring.linkat(@ptrToInt(&node), old_dir_fd, old_path, new_dir_fd, new_path, flags);
         suspend {}
@@ -882,23 +882,6 @@ fn doWrite(ring: *AsyncIOUring) !void {
     try std.testing.expectEqualSlices(u8, read_buffer[0..num_bytes_read], write_buffer[0..]);
 }
 
-fn testWriteWithEmptySubmissionQueue(finished_test: *bool) !void {
-    var ring = IO_Uring.init(1, 0) catch |err| switch (err) {
-        error.SystemOutdated => return error.SkipZigTest,
-        error.PermissionDenied => return error.SkipZigTest,
-        else => return err,
-    };
-    defer ring.deinit();
-    var async_ring = AsyncIOUring{ .ring = &ring };
-
-    var write_frame = async doWrite(&async_ring);
-
-    try async_ring.run_event_loop();
-
-    try await write_frame;
-    finished_test.* = true;
-}
-
 test "write" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
 
@@ -915,10 +898,11 @@ test "write" {
     try async_ring.run_event_loop();
 
     try nosuspend await write_frame;
-    std.debug.print("\n  I DID SOMETHING\n", .{});
 }
 
-fn testWriteHandlesFullSubmissionQueue(finished_test: *bool) !void {
+test "write handles full submission queue" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
     var ring = IO_Uring.init(1, 0) catch |err| switch (err) {
         error.SystemOutdated => return error.SkipZigTest,
         error.PermissionDenied => return error.SkipZigTest,
@@ -947,14 +931,5 @@ fn testWriteHandlesFullSubmissionQueue(finished_test: *bool) !void {
 
     try async_ring.run_event_loop();
 
-    try await write_frame;
-    finished_test.* = true;
-}
-
-test "write handles full submission queue" {
-    if (builtin.os.tag != .linux) return error.SkipZigTest;
-
-    var finished_test = false;
-    _ = async testWriteHandlesFullSubmissionQueue(&finished_test);
-    try std.testing.expect(finished_test);
+    try nosuspend await write_frame;
 }
