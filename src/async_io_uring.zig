@@ -33,6 +33,9 @@ pub const AsyncIOUringError = error{UnknownError};
 /// Note on abbreviations:
 ///      SQE == submission queue entry
 ///      CQE == completion queue entry
+///
+/// TODO: Add timeouts to things
+/// TODO: Add cancellation
 pub const AsyncIOUring = struct {
     ring: *IO_Uring = undefined,
 
@@ -75,17 +78,25 @@ pub const AsyncIOUring = struct {
         }
     }
 
+    pub const Timeout = struct {
+        ts: *const os.linux.kernel_timespec,
+        flags: u32,
+    };
+
     /// Helper function to convert IO_Uring ops into async ops on the event
     /// loop.
     fn doAsync(self: *AsyncIOUring, async_op: anytype) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
+        var attemptedRetry = false;
         while (true) {
             _ = async_op.run(self.ring, &node) catch |err| {
                 switch (err) {
                     error.SubmissionQueueFull => {
+                        if (attemptedRetry) @panic("Submission queue not large enough");
                         // Submit the current queue to clear it.
                         const num_submitted = try self.ring.submit_and_wait(1);
                         self.num_outstanding_events += num_submitted;
+                        attemptedRetry = true;
                         // Try again - we should have enough space now.
                         continue;
                     },
@@ -102,9 +113,18 @@ pub const AsyncIOUring = struct {
 
             // If the return code indicates success or a non-retryable error,
             // return the result. Otherwise, we loop around and try again.
-            if (node.result.res >= 0 or (@intToEnum(os.E, -node.result.res) != .INTR)) {
-                return node.result;
-            }
+            //
+            // TODO: INTR is actually expected if something is cancelled due to a timeout,
+            // and we don't want to retry in that case. Make this configurable or get rid
+            // of it.
+            //
+            // TODO: File issue to fix comments in link_timeout that suggest
+            // otherwise
+            //
+            //
+            //if (node.result.res >= 0) {  or (@intToEnum(os.E, -node.result.res) != .INTR)) {
+            return node.result;
+            //}
         }
     }
 
@@ -188,24 +208,35 @@ pub const AsyncIOUring = struct {
         fd: os.fd_t,
         buffer: []u8,
         offset: u64,
+        to: ?Timeout,
     ) !linux.io_uring_cqe {
         const Op = struct {
             fd: os.fd_t,
             buffer: []u8,
             offset: u64,
+            to: ?Timeout,
 
             pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-                return ring.read(@ptrToInt(node), op.fd, op.buffer, op.offset);
+                var read_sqe = try ring.read(@ptrToInt(node), op.fd, op.buffer, op.offset);
+                if (op.to) |t| {
+                    read_sqe.flags |= linux.IOSQE_IO_LINK;
+                    // No user data - we don't care about the result, since it
+                    // will show up in the result of read_sqe as -INTR if the
+                    // timeout expires before the read completes.
+                    _ = try ring.link_timeout(0, t.ts, t.flags);
+                }
+                return read_sqe;
             }
         };
 
-        var result = try self.doAsync(Op{ .fd = fd, .buffer = buffer, .offset = offset });
+        var result = try self.doAsync(Op{ .fd = fd, .buffer = buffer, .offset = offset, .to = to });
 
         if (result.res >= 0) {
             // Success.
             return result;
         } else {
-            // More or less copied from https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L801-L814
+            // More or less copied from
+            // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L801-L814
             return switch (@intToEnum(os.E, -result.res)) {
                 .BADF => unreachable,
                 .FAULT => unreachable,
@@ -216,7 +247,7 @@ pub const AsyncIOUring = struct {
                 .NOMEM => error.SystemResources,
                 .CONNREFUSED => error.ConnectionRefused,
                 .CONNRESET => error.ConnectionResetByPeer,
-                .CANCELED => error.Cancelled,
+                .INTR, .CANCELED => error.Cancelled,
                 else => |err| os.unexpectedErrno(err),
             };
         }
@@ -999,4 +1030,75 @@ test "write handles full submission queue" {
     try async_ring.run_event_loop();
 
     try nosuspend await write_frame;
+}
+
+fn testRead(ring: *AsyncIOUring) !void {
+    const path = "test_io_uring_write_read";
+    const file = try std.fs.cwd().createFile(path, .{ .read = true, .truncate = true });
+    defer file.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const fd = file.handle;
+
+    const write_buffer = [_]u8{9} ** 20;
+    const cqe_write = try ring.write(fd, write_buffer[0..], 0);
+    try std.testing.expectEqual(cqe_write.res, write_buffer.len);
+
+    var read_buffer = [_]u8{0} ** 20;
+
+    const read_cqe = try ring.read(fd, read_buffer[0..], 0, null);
+    const num_bytes_read = @intCast(usize, read_cqe.res);
+    try std.testing.expectEqualSlices(u8, read_buffer[0..num_bytes_read], write_buffer[0..]);
+}
+
+fn testReadThatTimesOut(ring: *AsyncIOUring) !void {
+    var read_buffer = [_]u8{0} ** 20;
+
+    const ts = os.linux.kernel_timespec{ .tv_sec = 0, .tv_nsec = 10000 };
+    // Try to read from stdin - there won't be any input so this should
+    // reliably time out.
+    _ = ring.read(std.io.getStdIn().handle, read_buffer[0..], 0, AsyncIOUring.Timeout{ .ts = &ts, .flags = 0 }) catch |err| {
+        return switch (err) {
+            error.Cancelled => {
+                // Expected.
+                std.debug.print("I was cancelled!\n", .{});
+            },
+            else => unreachable,
+        };
+    };
+}
+
+test "read" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var ring = IO_Uring.init(2, 0) catch |err| switch (err) {
+        error.SystemOutdated => return error.SkipZigTest,
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer ring.deinit();
+    var async_ring = AsyncIOUring{ .ring = &ring };
+
+    var read_frame = async testRead(&async_ring);
+
+    try async_ring.run_event_loop();
+
+    try nosuspend await read_frame;
+}
+
+test "read with timeout returns cancelled" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var ring = IO_Uring.init(2, 0) catch |err| switch (err) {
+        error.SystemOutdated => return error.SkipZigTest,
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer ring.deinit();
+    var async_ring = AsyncIOUring{ .ring = &ring };
+
+    var read_frame = async testReadThatTimesOut(&async_ring);
+
+    try async_ring.run_event_loop();
+
+    try nosuspend await read_frame;
 }
