@@ -945,8 +945,9 @@ test "write handles full submission queue" {
 
     try std.testing.expect(num_submitted > 0);
 
-    // Try to do a write - we expect this to submit the existing submissions to
-    // the kernel and then retry and succeed.
+    // Try to do a write - we expect this to submit the existing submission
+    // queue entries to the kernel and then retry adding the write to the
+    // submission queue and succeed.
     var write_frame = async testWrite(&async_ring);
 
     // A bit hacky - make sure the previous no-ops were submitted, but not the
