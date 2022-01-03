@@ -38,16 +38,11 @@ pub const AsyncIOUring = struct {
 
     // Number of events submitted minus number of events completed. We can
     // exit when this is 0.
-    //
-    // TODO: See if there's a way to do this with builtin IO_Uring methods.
-    //       Didn't see how at first glance. Specifically I don't know how
-    //       to find if there are previously submitted events that aren't
-    //       complete yet.
     num_outstanding_events: u64 = 0,
 
-    // Runs a loop to submit tasks on the underlying IO_Uring and block waiting
-    // for completion events. When a completion queue event (cqe) is available, it
-    // will resume the coroutine that submitted the request corresponding to that cqe.
+    /// Runs a loop to submit tasks on the underlying IO_Uring and block waiting
+    /// for completion events. When a completion queue event (cqe) is available, it
+    /// will resume the coroutine that submitted the request corresponding to that cqe.
     pub fn run_event_loop(self: *AsyncIOUring) !void {
         // TODO Make this a comptime parameter
         var cqes: [4096]linux.io_uring_cqe = undefined;
@@ -101,13 +96,13 @@ pub const AsyncIOUring = struct {
                 }
             };
 
+            // Suspend here until resumed by the event loop when the result of
+            // this operation is processed in the completion queue.
             suspend {}
+
             // If the return code indicates success or a non-retryable error,
             // return the result. Otherwise, we loop around and try again.
-            if (node.result.res >= 0) {
-                return node.result;
-            }
-            if (@intToEnum(os.E, -node.result.res) != .INTR) {
+            if (node.result.res >= 0 or (@intToEnum(os.E, -node.result.res) != .INTR)) {
                 return node.result;
             }
         }
@@ -169,36 +164,19 @@ pub const AsyncIOUring = struct {
     /// For example, you could call `drain_previous_sqes()` on the returned SQE, to use the no-op to
     /// know when the ring is idle before acting on a kill signal.
     pub fn nop(self: *AsyncIOUring) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        while (true) {
-            _ = self.ring.nop(@ptrToInt(&node)) catch |err| {
-                switch (err) {
-                    error.SubmissionQueueFull => {
-                        const num_submitted = try self.ring.submit_and_wait(1);
-                        self.num_outstanding_events += num_submitted;
-                        // Try again - we should have enough space now.
-                        continue;
-                    },
-                    else => {
-                        // Return all other errors to the caller.
-                        return err;
-                    },
-                }
-            };
-
-            suspend {}
-
-            if (node.result.res >= 0) {
-                // Success.
-                return node.result;
-            } else {
-                // Retry on certain errors, return error on others.
-                return switch (@intToEnum(os.E, -node.result.res)) {
-                    // TODO
-                    .INTR => continue,
-                    else => |err| os.unexpectedErrno(err),
-                };
+        const Op = struct {
+            pub fn run(_: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+                return ring.nop(@ptrToInt(node));
             }
+        };
+
+        var result = try self.doAsync(Op{});
+
+        if (result.res >= 0) {
+            // Success.
+            return result;
+        } else {
+            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
         }
     }
 
@@ -287,16 +265,24 @@ pub const AsyncIOUring = struct {
         iovecs: []const os.iovec,
         offset: u64,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try self.ring.readv(@ptrToInt(&node), fd, iovecs, offset);
-        suspend {}
+        const Op = struct {
+            fd: os.fd_t,
+            iovecs: []const os.iovec,
+            offset: u64,
+            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+                return ring.readv(@ptrToInt(node), op.fd, op.iovecs, op.offset);
+            }
+        };
 
-        // TODO
-        if (node.result.res < 0) {
-            return AsyncIOUringError.UnknownError;
+        var result = try self.doAsync(Op{ .fd = fd, .iovecs = iovecs, .offset = offset });
+
+        if (result.res >= 0) {
+            // Success.
+            return result;
+        } else {
+            // TODO
+            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
         }
-
-        return node.result;
     }
 
     /// Queues (but does not submit) an SQE to perform a IORING_OP_READ_FIXED.
@@ -311,16 +297,25 @@ pub const AsyncIOUring = struct {
         offset: u64,
         buffer_index: u16,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try self.ring.read_fixed(@ptrToInt(&node), fd, buffer, offset, buffer_index);
-        suspend {}
+        const Op = struct {
+            fd: os.fd_t,
+            buffer: *os.iovec,
+            offset: u64,
+            buffer_index: u16,
+            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+                return ring.readv(@ptrToInt(node), op.fd, op.buffer, op.offset, op.buffer_index);
+            }
+        };
 
-        // TODO
-        if (node.result.res < 0) {
-            return AsyncIOUringError.UnknownError;
+        var result = try self.doAsync(Op{ .fd = fd, .buffer = buffer, .offset = offset, .buffer_index = buffer_index });
+
+        if (result.res >= 0) {
+            // Success.
+            return result;
+        } else {
+            // TODO
+            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
         }
-
-        return node.result;
     }
 
     /// Queues (but does not submit) an SQE to perform a `pwritev()`.
@@ -333,16 +328,25 @@ pub const AsyncIOUring = struct {
         iovecs: []const os.iovec_const,
         offset: u64,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try self.ring.writev(@ptrToInt(&node), fd, iovecs, offset);
-        suspend {}
+        const Op = struct {
+            fd: os.fd_t,
+            iovecs: []const os.iovec_const,
+            offset: u64,
 
-        // TODO
-        if (node.result.res < 0) {
-            return AsyncIOUringError.UnknownError;
+            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+                return ring.writev(@ptrToInt(node), op.fd, op.iovecs, op.offset);
+            }
+        };
+
+        var result = try self.doAsync(Op{ .fd = fd, .iovecs = iovecs, .offset = offset });
+
+        if (result.res >= 0) {
+            // Success.
+            return result;
+        } else {
+            // TODO
+            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
         }
-
-        return node.result;
     }
 
     /// Queues (but does not submit) an SQE to perform a IORING_OP_WRITE_FIXED.
@@ -357,16 +361,26 @@ pub const AsyncIOUring = struct {
         offset: u64,
         buffer_index: u16,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try self.ring.write_fixed(@ptrToInt(&node), fd, buffer, offset, buffer_index);
-        suspend {}
+        const Op = struct {
+            fd: os.fd_t,
+            buffer: *os.iovec,
+            offset: u64,
+            buffer_index: u16,
 
-        // TODO
-        if (node.result.res < 0) {
-            return AsyncIOUringError.UnknownError;
+            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+                return ring.write_fixed(@ptrToInt(node), op.fd, op.buffer, op.offset, op.buffer_index);
+            }
+        };
+
+        var result = try self.doAsync(Op{ .fd = fd, .buffer = buffer, .offset = offset, .buffer_index = buffer_index });
+
+        if (result.res >= 0) {
+            // Success.
+            return result;
+        } else {
+            // TODO
+            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
         }
-
-        return node.result;
     }
 
     /// Queues (but does not submit) an SQE to perform an `accept4(2)` on a socket.
@@ -379,49 +393,41 @@ pub const AsyncIOUring = struct {
         addrlen: *os.socklen_t,
         flags: u32,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        while (true) {
-            _ = self.ring.accept(@ptrToInt(&node), fd, addr, addrlen, flags) catch |err| {
-                switch (err) {
-                    error.SubmissionQueueFull => {
-                        const num_submitted = try self.ring.submit_and_wait(1);
-                        self.num_outstanding_events += num_submitted;
-                        // Try again - we should have enough space now.
-                        continue;
-                    },
-                    else => {
-                        // Return all other errors to the caller.
-                        return err;
-                    },
-                }
-            };
-
-            suspend {}
-
-            if (node.result.res >= 0) {
-                return node.result;
-            } else {
-                // More or less copied from
-                // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L480-L497.
-                return switch (@intToEnum(os.E, -node.result.res)) {
-                    .INTR => continue,
-                    .AGAIN => error.WouldBlock,
-                    .BADF => unreachable,
-                    .CONNABORTED => error.ConnectionAborted,
-                    .FAULT => unreachable,
-                    .INVAL => error.SocketNotListening,
-                    .NOTSOCK => unreachable,
-                    .MFILE => error.ProcessFdQuotaExceeded,
-                    .NFILE => error.SystemFdQuotaExceeded,
-                    .NOBUFS => error.SystemResources,
-                    .NOMEM => error.SystemResources,
-                    .OPNOTSUPP => unreachable,
-                    .PROTO => error.ProtocolFailure,
-                    .PERM => error.BlockedByFirewall,
-                    .CANCELED => error.Cancelled,
-                    else => |err| return os.unexpectedErrno(err),
-                };
+        const Op = struct {
+            fd: os.fd_t,
+            addr: *os.sockaddr,
+            addrlen: *os.socklen_t,
+            flags: u32,
+            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+                return ring.accept(@ptrToInt(node), op.fd, op.addr, op.addrlen, op.flags);
             }
+        };
+
+        var result = try self.doAsync(Op{ .fd = fd, .addr = addr, .addrlen = addrlen, .flags = flags });
+
+        if (result.res >= 0) {
+            // Success.
+            return result;
+        } else {
+            // More or less copied from
+            // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L480-L497.
+            return switch (@intToEnum(os.E, -result.res)) {
+                .AGAIN => error.WouldBlock,
+                .BADF => unreachable,
+                .CONNABORTED => error.ConnectionAborted,
+                .FAULT => unreachable,
+                .INVAL => error.SocketNotListening,
+                .NOTSOCK => unreachable,
+                .MFILE => error.ProcessFdQuotaExceeded,
+                .NFILE => error.SystemFdQuotaExceeded,
+                .NOBUFS => error.SystemResources,
+                .NOMEM => error.SystemResources,
+                .OPNOTSUPP => unreachable,
+                .PROTO => error.ProtocolFailure,
+                .PERM => error.BlockedByFirewall,
+                .CANCELED => error.Cancelled,
+                else => |err| return os.unexpectedErrno(err),
+            };
         }
     }
 
@@ -434,53 +440,44 @@ pub const AsyncIOUring = struct {
         addr: *const os.sockaddr,
         addrlen: os.socklen_t,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        while (true) {
-            _ = self.ring.connect(@ptrToInt(&node), fd, addr, addrlen) catch |err| {
-                switch (err) {
-                    error.SubmissionQueueFull => {
-                        const num_submitted = try self.ring.submit_and_wait(1);
-                        self.num_outstanding_events += num_submitted;
-                        // Try again - we should have enough space now.
-                        continue;
-                    },
-                    else => {
-                        // Return all other errors to the caller.
-                        return err;
-                    },
-                }
-            };
-
-            suspend {}
-
-            if (node.result.res >= 0) {
-                return node.result;
-            } else {
-                // More or less copied from
-                // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L682-L704.
-                return switch (@intToEnum(os.E, -node.result.res)) {
-                    .ACCES => error.PermissionDenied,
-                    .PERM => error.PermissionDenied,
-                    .ADDRINUSE => error.AddressInUse,
-                    .ADDRNOTAVAIL => error.AddressNotAvailable,
-                    .AFNOSUPPORT => error.AddressFamilyNotSupported,
-                    .AGAIN, .INPROGRESS => error.WouldBlock,
-                    .ALREADY => error.ConnectionPending,
-                    .BADF => unreachable,
-                    .CONNREFUSED => error.ConnectionRefused,
-                    .CONNRESET => error.ConnectionResetByPeer,
-                    .FAULT => unreachable,
-                    .INTR => continue,
-                    .ISCONN => unreachable,
-                    .NETUNREACH => error.NetworkUnreachable,
-                    .NOTSOCK => unreachable,
-                    .PROTOTYPE => unreachable,
-                    .TIMEDOUT => error.ConnectionTimedOut,
-                    .NOENT => error.FileNotFound,
-                    .CANCELED => error.Cancelled,
-                    else => |err| os.unexpectedErrno(err),
-                };
+        const Op = struct {
+            fd: os.fd_t,
+            addr: *const os.sockaddr,
+            addrlen: os.socklen_t,
+            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+                return ring.connect(@ptrToInt(node), op.fd, op.addr, op.addrlen);
             }
+        };
+
+        var result = try self.doAsync(Op{ .fd = fd, .addr = addr, .addrlen = addrlen });
+
+        if (result.res >= 0) {
+            // Success.
+            return result;
+        } else {
+            // More or less copied from
+            // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L682-L704.
+            return switch (@intToEnum(os.E, -result.res)) {
+                .ACCES => error.PermissionDenied,
+                .PERM => error.PermissionDenied,
+                .ADDRINUSE => error.AddressInUse,
+                .ADDRNOTAVAIL => error.AddressNotAvailable,
+                .AFNOSUPPORT => error.AddressFamilyNotSupported,
+                .AGAIN, .INPROGRESS => error.WouldBlock,
+                .ALREADY => error.ConnectionPending,
+                .BADF => unreachable,
+                .CONNREFUSED => error.ConnectionRefused,
+                .CONNRESET => error.ConnectionResetByPeer,
+                .FAULT => unreachable,
+                .ISCONN => unreachable,
+                .NETUNREACH => error.NetworkUnreachable,
+                .NOTSOCK => unreachable,
+                .PROTOTYPE => unreachable,
+                .TIMEDOUT => error.ConnectionTimedOut,
+                .NOENT => error.FileNotFound,
+                .CANCELED => error.Cancelled,
+                else => |err| os.unexpectedErrno(err),
+            };
         }
     }
 
@@ -493,16 +490,26 @@ pub const AsyncIOUring = struct {
         op: u32,
         ev: ?*linux.epoll_event,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try self.ring.epoll_ctl(@ptrToInt(&node), epfd, fd, op, ev);
-        suspend {}
+        const Op = struct {
+            epfd: os.fd_t,
+            fd: os.fd_t,
+            op: u32,
+            ev: ?*linux.epoll_event,
 
-        // TODO
-        if (node.result.res < 0) {
-            return AsyncIOUringError.UnknownError;
+            pub fn run(this: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+                return ring.epoll_ctl(@ptrToInt(node), this.epfd, this.fd, this.op, this.ev);
+            }
+        };
+
+        var result = try self.doAsync(Op{ .epfd = epfd, .fd = fd, .op = op, .ev = ev });
+
+        if (result.res >= 0) {
+            // Success.
+            return result;
+        } else {
+            // TODO
+            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
         }
-
-        return node.result;
     }
 
     /// Queues (but does not submit) an SQE to perform a `recv(2)`.
@@ -612,46 +619,47 @@ pub const AsyncIOUring = struct {
         flags: u32,
         mode: os.mode_t,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try self.ring.openat(@ptrToInt(&node), fd, path, flags, mode);
-        suspend {}
+        const Op = struct {
+            fd: os.fd_t,
+            path: [*:0]const u8,
+            flags: u32,
+            mode: os.mode_t,
 
-        // TODO
-        if (node.result.res < 0) {
-            return AsyncIOUringError.UnknownError;
+            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+                return ring.openat(@ptrToInt(node), op.fd, op.path, op.flags, op.mode);
+            }
+        };
+
+        var result = try self.doAsync(Op{ .fd = fd, .path = path, .flags = flags, .mode = mode });
+
+        if (result.res >= 0) {
+            // Success.
+            return result;
+        } else {
+            // TODO
+            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
         }
-
-        return node.result;
     }
 
     /// Queues (but does not submit) an SQE to perform a `close(2)`.
     /// Returns a pointer to the SQE.
     pub fn close(self: *AsyncIOUring, fd: os.fd_t) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        while (true) {
-            _ = self.ring.close(@ptrToInt(&node), fd) catch |err| {
-                switch (err) {
-                    error.SubmissionQueueFull => {
-                        const num_submitted = try self.ring.submit_and_wait(1);
-                        self.num_outstanding_events += num_submitted;
-                        // Try again - we should have enough space now.
-                        continue;
-                    },
-                    else => {
-                        // Return all other errors to the caller.
-                        return err;
-                    },
-                }
-            };
+        const Op = struct {
+            fd: os.fd_t,
 
-            suspend {}
-
-            if (node.result.res >= 0) {
-                return node.result;
-            } else {
-                // TODO
-                return AsyncIOUringError.UnknownError;
+            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+                return ring.close(@ptrToInt(node), op.fd);
             }
+        };
+
+        var result = try self.doAsync(Op{ .fd = fd });
+
+        if (result.res >= 0) {
+            // Success.
+            return result;
+        } else {
+            // TODO
+            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
         }
     }
 
