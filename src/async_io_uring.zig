@@ -199,7 +199,7 @@ pub const AsyncIOUring = struct {
                         // Submit the current queue to clear it.
                         const num_submitted = try self.ring.submit_and_wait(1);
                         self.num_outstanding_events += num_submitted;
-                        // Try again and hope we have enough space now.
+                        // Try again - we should have enough space now.
                         continue;
                     },
                     else => {
