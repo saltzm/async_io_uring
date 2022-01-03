@@ -1,12 +1,10 @@
 const std = @import("std");
 const IO_Uring = std.os.linux.IO_Uring;
 const assert = std.debug.assert;
-const builtin = std.builtin;
 const mem = std.mem;
 const net = std.net;
 const os = std.os;
 const linux = os.linux;
-const testing = std.testing;
 
 const aiou = @import("async_io_uring.zig");
 const AsyncIOUring = aiou.AsyncIOUring;
@@ -40,9 +38,16 @@ pub fn run_server_event_loop(id: u64) !void {
 
     var async_ring = AsyncIOUring{ .ring = &ring };
 
-    _ = async run_server(&async_ring, id);
+    // The frame size is very large when the max number of connections is high.
+    // We could increase stack size but for now we're just allocating it on the
+    // heap - doesn't seem to have much of an affect on performance (and that
+    // makes sense because we're only doing it once).
+    const frame = try std.heap.page_allocator.create(@Frame(run_server));
+    defer std.heap.page_allocator.destroy(frame);
+    frame.* = async run_server(&async_ring, id);
 
     try async_ring.run_event_loop();
+    try nosuspend await frame;
 }
 
 // Open a socket and run the echo server listening on that socket. The server
