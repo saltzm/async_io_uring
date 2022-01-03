@@ -197,7 +197,7 @@ pub const AsyncIOUring = struct {
                 switch (err) {
                     error.SubmissionQueueFull => {
                         // Submit the current queue to clear it.
-                        const num_submitted = try self.ring.submit();
+                        const num_submitted = try self.ring.submit_and_wait(1);
                         self.num_outstanding_events += num_submitted;
                         // Try again and hope we have enough space now.
                         continue;
@@ -864,6 +864,19 @@ pub const AsyncIOUring = struct {
 
 };
 
+// const WriteTest = struct {
+//     path: []u8 = "test_io_uring_write",
+//     file: std.fs.File,
+//     fd: os.fd_t,
+//
+//     const Self = @This();
+//
+//     pub fn init(path: []u8) Self {
+//         var self = Self { path, try std.fs.cwd().createFile(path, .{ .read = true, .truncate = true }), file.handle };
+//         return .{};
+//     }
+// };
+
 fn doWrite(ring: *AsyncIOUring) !void {
     const path = "test_io_uring_write_read";
     const file = try std.fs.cwd().createFile(path, .{ .read = true, .truncate = true });
@@ -903,7 +916,7 @@ test "write" {
 test "write handles full submission queue" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
 
-    var ring = IO_Uring.init(1, 0) catch |err| switch (err) {
+    var ring = IO_Uring.init(4, 0) catch |err| switch (err) {
         error.SystemOutdated => return error.SkipZigTest,
         error.PermissionDenied => return error.SkipZigTest,
         else => return err,
@@ -911,24 +924,50 @@ test "write handles full submission queue" {
     defer ring.deinit();
     var async_ring = AsyncIOUring{ .ring = &ring };
 
+    // Random number to identify the no-ops.
+    const nop_user_data = 9;
+    var num_submitted: u32 = 0;
     // Fill up the submission queue.
     while (true) {
-        _ = ring.get_sqe() catch |err| {
+        var sqe = ring.nop(nop_user_data) catch |err| {
             switch (err) {
                 error.SubmissionQueueFull => {
                     break;
                 },
                 else => {
-                    return;
+                    return err;
                 },
             }
         };
+        num_submitted += 1;
+        sqe.user_data = 9;
     }
 
-    // Try to do a write - we expect this to submit the existing submissions
-    // and then retry and succeed.
+    try std.testing.expect(num_submitted > 0);
+
+    // Try to do a write - we expect this to submit the existing submissions to
+    // the kernel and then retry and succeed.
     var write_frame = async doWrite(&async_ring);
 
+    // A bit hacky - make sure the previous no-ops were submitted, but not the
+    // write itself.
+    var cqes: [256]linux.io_uring_cqe = undefined;
+    const num_ready_cqes = try ring.copy_cqes(cqes[0..], num_submitted);
+    async_ring.num_outstanding_events -= num_ready_cqes;
+
+    try std.testing.expectEqual(num_ready_cqes, num_submitted);
+    for (cqes[0..num_ready_cqes]) |cqe| {
+        try std.testing.expectEqual(cqe.user_data, nop_user_data);
+    }
+
+    // Make sure the write itself hasn't been submitted.
+    try std.testing.expectEqual(ring.sq_ready(), 1);
+    // VERY hacky - inspect the last submission queue entry to check that it's
+    // actually a write.
+    var sqe = &ring.sq.sqes[(ring.sq.sqe_tail - 1) & ring.sq.mask];
+    try std.testing.expectEqual(sqe.opcode, .WRITE);
+
+    // This should submit the write and wait for it to occur.
     try async_ring.run_event_loop();
 
     try nosuspend await write_frame;
