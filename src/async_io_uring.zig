@@ -963,8 +963,9 @@ test "write handles full submission queue" {
 
     // Make sure the write itself hasn't been submitted.
     try std.testing.expectEqual(ring.sq_ready(), 1);
-    // VERY hacky - inspect the last submission queue entry to check that it's
-    // actually a write.
+    // Inspect the last submission queue entry to check that it's actually a
+    // write. There's no way to get this from IO_Uring without directly
+    // inspecting its SubmissionQueue, AFAICT, so we do that for now.
     var sqe = &ring.sq.sqes[(ring.sq.sqe_tail - 1) & ring.sq.mask];
     try std.testing.expectEqual(sqe.opcode, .WRITE);
 
