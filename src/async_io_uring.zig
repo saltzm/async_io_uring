@@ -877,7 +877,7 @@ pub const AsyncIOUring = struct {
 //     }
 // };
 
-fn doWrite(ring: *AsyncIOUring) !void {
+fn testWrite(ring: *AsyncIOUring) !void {
     const path = "test_io_uring_write_read";
     const file = try std.fs.cwd().createFile(path, .{ .read = true, .truncate = true });
     defer file.close();
@@ -906,7 +906,7 @@ test "write" {
     defer ring.deinit();
     var async_ring = AsyncIOUring{ .ring = &ring };
 
-    var write_frame = async doWrite(&async_ring);
+    var write_frame = async testWrite(&async_ring);
 
     try async_ring.run_event_loop();
 
@@ -947,7 +947,7 @@ test "write handles full submission queue" {
 
     // Try to do a write - we expect this to submit the existing submissions to
     // the kernel and then retry and succeed.
-    var write_frame = async doWrite(&async_ring);
+    var write_frame = async testWrite(&async_ring);
 
     // A bit hacky - make sure the previous no-ops were submitted, but not the
     // write itself.
