@@ -1102,3 +1102,55 @@ test "read with timeout returns cancelled" {
 
     try nosuspend await read_frame;
 }
+
+test "read with timeout repro" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var ring = IO_Uring.init(4, 0) catch |err| switch (err) {
+        error.SystemOutdated => return error.SkipZigTest,
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer ring.deinit();
+
+    var read_buffer = [_]u8{0} ** 20;
+    const read_user_data = 8;
+    var read_sqe = try ring.read(read_user_data, std.io.getStdIn().handle, read_buffer[0..], 0);
+    read_sqe.flags |= linux.IOSQE_IO_LINK;
+
+    const ts = os.linux.kernel_timespec{ .tv_sec = 0, .tv_nsec = 10000 };
+    const timeout_user_data = 9;
+    _ = try ring.link_timeout(timeout_user_data, &ts, 0);
+
+    // Wait for both to return.
+    const num_submitted = try ring.submit();
+    try std.testing.expectEqual(num_submitted, 2);
+
+    var cqes: [256]linux.io_uring_cqe = undefined;
+
+    const num_ready_cqes = try ring.copy_cqes(cqes[0..], num_submitted);
+
+    try std.testing.expectEqual(num_ready_cqes, num_submitted);
+
+    for (cqes[0..num_ready_cqes]) |cqe| {
+        if (cqe.user_data == read_user_data) {
+            std.debug.print("read res : {}\n", .{@intToEnum(os.E, -cqe.res)});
+            // This fails because res is actually E.INTR - That contradicts the
+            // comments on link_timeout.
+            // TODO
+            // try std.testing.expectEqual(-cqe.res, @intCast(i32, @enumToInt(os.E.CANCELED)));
+            // This would pass.
+            try std.testing.expectEqual(-cqe.res, @intCast(i32, @enumToInt(os.E.INTR)));
+        } else if (cqe.user_data == timeout_user_data) {
+            // This fails because res is actually E.ALREADY. That contradicts the
+            // comments on link_timeout and in the man pages for
+            // io_uring_setup, which say it should be E.TIME since the
+            // dependent request should not have completed before the timeout.
+            // try std.testing.expectEqual(-cqe.res, @intCast(i32, @enumToInt(os.E.TIME)));
+            // This would pass.
+            try std.testing.expectEqual(-cqe.res, @intCast(i32, @enumToInt(os.E.ALREADY)));
+        } else {
+            unreachable;
+        }
+    }
+}
