@@ -118,10 +118,6 @@ pub const AsyncIOUring = struct {
             // and we don't want to retry in that case. Make this configurable or get rid
             // of it.
             //
-            // TODO: File issue to fix comments in link_timeout that suggest
-            // otherwise
-            //
-            //
             //if (node.result.res >= 0) {  or (@intToEnum(os.E, -node.result.res) != .INTR)) {
             return node.result;
             //}
