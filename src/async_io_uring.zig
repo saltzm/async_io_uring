@@ -149,6 +149,38 @@ pub const AsyncIOUring = struct {
         }
     }
 
+    /// Queues (but does not submit) an SQE to remove an existing operation.
+    /// Returns a pointer to the SQE.
+    ///
+    /// The operation is identified by its `user_data`.
+    ///
+    /// The completion event result will be `0` if the operation was found and cancelled successfully,
+    /// `-EALREADY` if the operation was found but was already in progress, or
+    /// `-ENOENT` if the operation was not found.
+    pub fn cancel(
+        self: *AsyncIOUring,
+        cancel_user_data: u64,
+        flags: u32,
+    ) !linux.io_uring_cqe {
+        const Op = struct {
+            cancel_user_data: u64,
+            flags: u32,
+            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+                return ring.cancel(@ptrToInt(node), op.cancel_user_data, op.flags);
+            }
+        };
+
+        var result = try self.doAsync(Op{ .cancel_user_data = cancel_user_data, .flags = flags });
+
+        if (result.res >= 0) {
+            // Success.
+            return result;
+        } else {
+            // TODO
+            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
+        }
+    }
+
     /// Queues (but does not submit) an SQE to perform an `fsync(2)`.
     /// Returns a pointer to the SQE so that you can further modify the SQE for advanced use cases.
     /// For example, for `fdatasync()` you can set `IORING_FSYNC_DATASYNC` in the SQE's `rw_flags`.
@@ -224,25 +256,23 @@ pub const AsyncIOUring = struct {
     /// Queues (but does not submit) an SQE to perform a `read(2)`.
     /// Suspends execution until the resulting CQE is available and returns
     /// that CQE.
-    pub fn read(
-        self: *AsyncIOUring,
-        fd: os.fd_t,
-        buffer: []u8,
-        offset: u64,
-        to: ?Timeout,
-    ) !linux.io_uring_cqe {
+    pub fn read(self: *AsyncIOUring, fd: os.fd_t, buffer: []u8, offset: u64, to: ?Timeout, operation_id: ?*usize) !linux.io_uring_cqe {
         const Op = struct {
             fd: os.fd_t,
             buffer: []u8,
             offset: u64,
             timeout: ?Timeout,
+            id: ?*usize,
 
             pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+                if (op.id) |id| {
+                    id.* = @ptrToInt(node);
+                }
                 return try ring.read(@ptrToInt(node), op.fd, op.buffer, op.offset);
             }
         };
 
-        var result = try self.doAsync(Op{ .fd = fd, .buffer = buffer, .offset = offset, .timeout = to });
+        var result = try self.doAsync(Op{ .fd = fd, .buffer = buffer, .offset = offset, .timeout = to, .id = operation_id });
 
         if (result.res >= 0) {
             // Success.
@@ -1058,7 +1088,7 @@ fn testRead(ring: *AsyncIOUring) !void {
 
     var read_buffer = [_]u8{0} ** 20;
 
-    const read_cqe = try ring.read(fd, read_buffer[0..], 0, null);
+    const read_cqe = try ring.read(fd, read_buffer[0..], 0, null, null);
     const num_bytes_read = @intCast(usize, read_cqe.res);
     try std.testing.expectEqualSlices(u8, read_buffer[0..num_bytes_read], write_buffer[0..]);
 }
@@ -1069,14 +1099,8 @@ fn testReadThatTimesOut(ring: *AsyncIOUring) !void {
     const ts = os.linux.kernel_timespec{ .tv_sec = 0, .tv_nsec = 10000 };
     // Try to read from stdin - there won't be any input so this should
     // reliably time out.
-    _ = ring.read(std.io.getStdIn().handle, read_buffer[0..], 0, AsyncIOUring.Timeout{ .ts = &ts, .flags = 0 }) catch |err| {
-        return switch (err) {
-            error.Cancelled => {
-                // Expected.
-            },
-            else => unreachable,
-        };
-    };
+    const read_cqe = ring.read(std.io.getStdIn().handle, read_buffer[0..], 0, AsyncIOUring.Timeout{ .ts = &ts, .flags = 0 }, null);
+    try std.testing.expectEqual(read_cqe, error.Cancelled);
 }
 
 test "read" {
@@ -1109,6 +1133,41 @@ test "read with timeout returns cancelled" {
     var async_ring = AsyncIOUring{ .ring = &ring };
 
     var read_frame = async testReadThatTimesOut(&async_ring);
+
+    try async_ring.run_event_loop();
+
+    try nosuspend await read_frame;
+}
+
+fn testReadThatIsCancelled(ring: *AsyncIOUring) !void {
+    var read_buffer = [_]u8{0} ** 20;
+
+    var op_id: usize = undefined;
+
+    // Try to read from stdin - there won't be any input so this should
+    // reliably time out.
+    var read_frame = async ring.read(std.io.getStdIn().handle, read_buffer[0..], 0, null, &op_id);
+
+    const cancel_cqe = try ring.cancel(op_id, 0);
+    // Expect that cancellation succeeded.
+    try std.testing.expectEqual(cancel_cqe.res, 0);
+
+    const read_cqe = await read_frame;
+    try std.testing.expectEqual(read_cqe, error.Cancelled);
+}
+
+test "read that is cancelled returns cancelled" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var ring = IO_Uring.init(2, 0) catch |err| switch (err) {
+        error.SystemOutdated => return error.SkipZigTest,
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer ring.deinit();
+    var async_ring = AsyncIOUring{ .ring = &ring };
+
+    var read_frame = async testReadThatIsCancelled(&async_ring);
 
     try async_ring.run_event_loop();
 

@@ -44,7 +44,7 @@ pub fn run_client(ring: *AsyncIOUring) !void {
         std.debug.print("Input: ", .{});
 
         const ts = os.linux.kernel_timespec{ .tv_sec = 10, .tv_nsec = 0 };
-        const read_cqe = ring.read(stdin_fd, input_buffer[0..], input_buffer.len, AsyncIOUring.Timeout{ .ts = &ts, .flags = 0 }) catch |err| {
+        const read_cqe = ring.read(stdin_fd, input_buffer[0..], input_buffer.len, AsyncIOUring.Timeout{ .ts = &ts, .flags = 0 }, null) catch |err| {
             std.debug.print("Error in run_client: read {} \n", .{err});
             return err;
         };
