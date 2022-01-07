@@ -99,15 +99,17 @@ pub const AsyncIOUring = struct {
                 // TODO: This is wicked cool that I can do this but this is also
                 // silly - should probably just have timeout be an optional
                 // parameter of doAsync.
-                if (@hasField(@TypeOf(async_op), "timeout")) {
-                    if (async_op.timeout) |t| {
-                        sqe.flags |= linux.IOSQE_IO_LINK;
-                        // No user data - we don't care about the result, since it
-                        // will show up in the result of sqe as -INTR if the
-                        // timeout expires before the operation completes.
-                        _ = self.ring.link_timeout(0, t.ts, t.flags) catch |err| {
-                            break :expr err;
-                        };
+                if (@hasDecl(@TypeOf(async_op), "Input")) {
+                    if (@hasField(@TypeOf(async_op).Input, "timeout")) {
+                        if (async_op.input.timeout) |t| {
+                            sqe.flags |= linux.IOSQE_IO_LINK;
+                            // No user data - we don't care about the result, since it
+                            // will show up in the result of sqe as -INTR if the
+                            // timeout expires before the operation completes.
+                            _ = self.ring.link_timeout(0, t.ts, t.flags) catch |err| {
+                                break :expr err;
+                            };
+                        }
                     }
                 }
                 break :expr sqe;
@@ -131,6 +133,18 @@ pub const AsyncIOUring = struct {
                     },
                 }
             };
+
+            // Set the id for cancellation if one is supplied. Note: This must go
+            // prior to suspend.
+            //
+            // TODO: This is wicked cool that I can do this but this is also
+            // silly - should probably just have id be an optional
+            // parameter of doAsync.
+            if (@hasField(@TypeOf(async_op), "id")) {
+                if (async_op.id) |id| {
+                    id.* = @ptrToInt(&node);
+                }
+            }
 
             // Suspend here until resumed by the event loop when the result of
             // this operation is processed in the completion queue.
@@ -262,46 +276,50 @@ pub const AsyncIOUring = struct {
         }
     }
 
-    /// Queues (but does not submit) an SQE to perform a `read(2)`.
-    /// Suspends execution until the resulting CQE is available and returns
-    /// that CQE.
-    pub fn read(self: *AsyncIOUring, fd: os.fd_t, buffer: []u8, offset: u64, to: ?Timeout, operation_id: ?*usize) !linux.io_uring_cqe {
-        const Op = struct {
+    pub const ReadOp = struct {
+        pub const Input = struct {
             fd: os.fd_t,
             buffer: []u8,
             offset: u64,
             timeout: ?Timeout,
-            id: ?*usize,
-
-            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-                if (op.id) |id| {
-                    id.* = @ptrToInt(node);
-                }
-                return try ring.read(@ptrToInt(node), op.fd, op.buffer, op.offset);
-            }
-
-            // TODO: Use something more constrained than anyerror
-            // TODO: Decide if I like this interface.
-            pub fn convertError(linux_errno: i32) anyerror {
-                // More or less copied from
-                // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L801-L814
-                return switch (@intToEnum(os.E, -linux_errno)) {
-                    .BADF => unreachable,
-                    .FAULT => unreachable,
-                    .INVAL => unreachable,
-                    .NOTCONN => error.SocketNotConnected,
-                    .NOTSOCK => unreachable,
-                    .AGAIN => error.WouldBlock,
-                    .NOMEM => error.SystemResources,
-                    .CONNREFUSED => error.ConnectionRefused,
-                    .CONNRESET => error.ConnectionResetByPeer,
-                    .INTR, .CANCELED => error.Cancelled,
-                    else => |err| os.unexpectedErrno(err),
-                };
-            }
         };
 
-        return self.doAsync(Op{ .fd = fd, .buffer = buffer, .offset = offset, .timeout = to, .id = operation_id });
+        input: Input,
+        id: ?*usize,
+
+        pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+            return try ring.read(@ptrToInt(node), op.input.fd, op.input.buffer, op.input.offset);
+        }
+
+        // TODO: Use something more constrained than anyerror
+        // TODO: Decide if I like this interface.
+        pub fn convertError(linux_errno: i32) anyerror {
+            // More or less copied from
+            // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L801-L814
+            return switch (@intToEnum(os.E, -linux_errno)) {
+                .BADF => unreachable,
+                .FAULT => unreachable,
+                .INVAL => unreachable,
+                .NOTCONN => error.SocketNotConnected,
+                .NOTSOCK => unreachable,
+                .AGAIN => error.WouldBlock,
+                .NOMEM => error.SystemResources,
+                .CONNREFUSED => error.ConnectionRefused,
+                .CONNRESET => error.ConnectionResetByPeer,
+                .INTR, .CANCELED => error.Cancelled,
+                else => |err| os.unexpectedErrno(err),
+            };
+        }
+    };
+
+    /// Queues (but does not submit) an SQE to perform a `read(2)`.
+    /// Suspends execution until the resulting CQE is available and returns
+    /// that CQE.
+    pub fn read(self: *AsyncIOUring, fd: os.fd_t, buffer: []u8, offset: u64, to: ?Timeout, operation_id: ?*usize) !linux.io_uring_cqe {
+        return self.doAsync(ReadOp{
+            .input = ReadOp.Input{ .fd = fd, .buffer = buffer, .offset = offset, .timeout = to },
+            .id = operation_id,
+        });
     }
 
     /// Queues (but does not submit) an SQE to perform a `write(2)`.
@@ -1129,6 +1147,41 @@ test "read" {
     try nosuspend await read_frame;
 }
 
+fn testReadWithManualAPI(ring: *AsyncIOUring) !void {
+    var read_buffer = [_]u8{0} ** 20;
+
+    const ts = os.linux.kernel_timespec{ .tv_sec = 0, .tv_nsec = 10000 };
+    // Try to read from stdin - there won't be any input so this should
+    // reliably time out.
+    const read_cqe = ring.doAsync(AsyncIOUring.ReadOp{
+        .input = AsyncIOUring.ReadOp.Input{
+            .fd = std.io.getStdIn().handle,
+            .buffer = read_buffer[0..],
+            .offset = 0,
+            .timeout = AsyncIOUring.Timeout{ .ts = &ts, .flags = 0 },
+        },
+        .id = null,
+    });
+    try std.testing.expectEqual(read_cqe, error.Cancelled);
+}
+
+test "read with manual API" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var ring = IO_Uring.init(2, 0) catch |err| switch (err) {
+        error.SystemOutdated => return error.SkipZigTest,
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer ring.deinit();
+    var async_ring = AsyncIOUring{ .ring = &ring };
+
+    var read_frame = async testRead(&async_ring);
+
+    try async_ring.run_event_loop();
+
+    try nosuspend await read_frame;
+}
 test "read with timeout returns cancelled" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
 
