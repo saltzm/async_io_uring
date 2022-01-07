@@ -1144,8 +1144,8 @@ fn testReadThatIsCancelled(ring: *AsyncIOUring) !void {
 
     var op_id: usize = undefined;
 
-    // Try to read from stdin - there won't be any input so this should
-    // reliably time out.
+    // Try to read from stdin - there won't be any input so this operation should
+    // reliably hang until cancellation.
     var read_frame = async ring.read(std.io.getStdIn().handle, read_buffer[0..], 0, null, &op_id);
 
     const cancel_cqe = try ring.cancel(op_id, 0);
