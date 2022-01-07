@@ -1073,7 +1073,6 @@ fn testReadThatTimesOut(ring: *AsyncIOUring) !void {
         return switch (err) {
             error.Cancelled => {
                 // Expected.
-                std.debug.print("I was cancelled!\n", .{});
             },
             else => unreachable,
         };
@@ -1147,7 +1146,6 @@ test "read with timeout repro" {
 
     for (cqes[0..num_ready_cqes]) |cqe| {
         if (cqe.user_data == read_user_data) {
-            std.debug.print("read res : {}\n", .{@intToEnum(os.E, -cqe.res)});
             // This fails because res is actually E.INTR - That contradicts the
             // comments on link_timeout.
             // TODO
