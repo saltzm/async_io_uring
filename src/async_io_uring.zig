@@ -89,7 +89,32 @@ pub const AsyncIOUring = struct {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         var attemptedRetry = false;
         while (true) {
-            _ = async_op.run(self.ring, &node) catch |err| {
+            const sqe_or_error = expr: {
+                // Run the IO_Uring op.
+                const sqe = async_op.run(self.ring, &node) catch |err| {
+                    break :expr err;
+                };
+                // Attach a linked timeout if one is supplied.
+                //
+                // TODO: This is wicked cool that I can do this but this is also
+                // silly - should probably just have timeout be an optional
+                // parameter of doAsync.
+                if (@hasField(@TypeOf(async_op), "timeout")) {
+                    if (async_op.timeout) |t| {
+                        sqe.flags |= linux.IOSQE_IO_LINK;
+                        // No user data - we don't care about the result, since it
+                        // will show up in the result of sqe as -INTR if the
+                        // timeout expires before the operation completes.
+                        _ = self.ring.link_timeout(0, t.ts, t.flags) catch |err| {
+                            break :expr err;
+                        };
+                    }
+                }
+                break :expr sqe;
+            };
+
+            // Handle submission errors on either the 'run' or 'link_timeout' ops.
+            _ = sqe_or_error catch |err| {
                 switch (err) {
                     error.SubmissionQueueFull => {
                         if (attemptedRetry) @panic("Submission queue not large enough");
@@ -210,22 +235,14 @@ pub const AsyncIOUring = struct {
             fd: os.fd_t,
             buffer: []u8,
             offset: u64,
-            to: ?Timeout,
+            timeout: ?Timeout,
 
             pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-                var read_sqe = try ring.read(@ptrToInt(node), op.fd, op.buffer, op.offset);
-                if (op.to) |t| {
-                    read_sqe.flags |= linux.IOSQE_IO_LINK;
-                    // No user data - we don't care about the result, since it
-                    // will show up in the result of read_sqe as -INTR if the
-                    // timeout expires before the read completes.
-                    _ = try ring.link_timeout(0, t.ts, t.flags);
-                }
-                return read_sqe;
+                return try ring.read(@ptrToInt(node), op.fd, op.buffer, op.offset);
             }
         };
 
-        var result = try self.doAsync(Op{ .fd = fd, .buffer = buffer, .offset = offset, .to = to });
+        var result = try self.doAsync(Op{ .fd = fd, .buffer = buffer, .offset = offset, .timeout = to });
 
         if (result.res >= 0) {
             // Success.
