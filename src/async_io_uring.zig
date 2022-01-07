@@ -142,10 +142,19 @@ pub const AsyncIOUring = struct {
             // TODO: INTR is actually expected if something is cancelled due to a timeout,
             // and we don't want to retry in that case. Make this configurable or get rid
             // of it.
-            //
-            //if (node.result.res >= 0) {  or (@intToEnum(os.E, -node.result.res) != .INTR)) {
-            return node.result;
-            //}
+            if (node.result.res >= 0) { //  or (@intToEnum(os.E, -node.result.res) != .INTR)) {
+                return node.result;
+            } else {
+                // TODO: Decide whether I like this interface, and if so,
+                // convert all usages so I don't have to have this if statement
+                // here. Still cool it's possible though.
+                const AsyncOp = @TypeOf(async_op);
+                if (@hasDecl(AsyncOp, "convertError")) {
+                    return AsyncOp.convertError(node.result.res);
+                } else {
+                    return node.result;
+                }
+            }
         }
     }
 
@@ -270,30 +279,29 @@ pub const AsyncIOUring = struct {
                 }
                 return try ring.read(@ptrToInt(node), op.fd, op.buffer, op.offset);
             }
+
+            // TODO: Use something more constrained than anyerror
+            // TODO: Decide if I like this interface.
+            pub fn convertError(linux_errno: i32) anyerror {
+                // More or less copied from
+                // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L801-L814
+                return switch (@intToEnum(os.E, -linux_errno)) {
+                    .BADF => unreachable,
+                    .FAULT => unreachable,
+                    .INVAL => unreachable,
+                    .NOTCONN => error.SocketNotConnected,
+                    .NOTSOCK => unreachable,
+                    .AGAIN => error.WouldBlock,
+                    .NOMEM => error.SystemResources,
+                    .CONNREFUSED => error.ConnectionRefused,
+                    .CONNRESET => error.ConnectionResetByPeer,
+                    .INTR, .CANCELED => error.Cancelled,
+                    else => |err| os.unexpectedErrno(err),
+                };
+            }
         };
 
-        var result = try self.doAsync(Op{ .fd = fd, .buffer = buffer, .offset = offset, .timeout = to, .id = operation_id });
-
-        if (result.res >= 0) {
-            // Success.
-            return result;
-        } else {
-            // More or less copied from
-            // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L801-L814
-            return switch (@intToEnum(os.E, -result.res)) {
-                .BADF => unreachable,
-                .FAULT => unreachable,
-                .INVAL => unreachable,
-                .NOTCONN => error.SocketNotConnected,
-                .NOTSOCK => unreachable,
-                .AGAIN => error.WouldBlock,
-                .NOMEM => error.SystemResources,
-                .CONNREFUSED => error.ConnectionRefused,
-                .CONNRESET => error.ConnectionResetByPeer,
-                .INTR, .CANCELED => error.Cancelled,
-                else => |err| os.unexpectedErrno(err),
-            };
-        }
+        return self.doAsync(Op{ .fd = fd, .buffer = buffer, .offset = offset, .timeout = to, .id = operation_id });
     }
 
     /// Queues (but does not submit) an SQE to perform a `write(2)`.
