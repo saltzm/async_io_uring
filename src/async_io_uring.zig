@@ -1165,6 +1165,36 @@ fn testReadWithManualAPI(ring: *AsyncIOUring) !void {
     try std.testing.expectEqual(read_cqe, error.Cancelled);
 }
 
+fn testReadWithManualAPIAndOverridenRun(ring: *AsyncIOUring) !void {
+    var read_buffer = [_]u8{0} ** 20;
+
+    const MyReadOp = struct {
+        const Input = AsyncIOUring.ReadOp.Input;
+        const convertError = AsyncIOUring.ReadOp.convertError;
+
+        input: Input,
+
+        pub fn run(op: @This(), my_ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+            std.debug.print("\n THIS IS MY WORLD \n", .{});
+            return try my_ring.read(@ptrToInt(node), op.input.fd, op.input.buffer, op.input.offset);
+        }
+    };
+
+    const ts = os.linux.kernel_timespec{ .tv_sec = 0, .tv_nsec = 10000 };
+    // Try to read from stdin - there won't be any input so this should
+    // reliably time out.
+    const read_cqe = ring.doAsync(MyReadOp{
+        .input = MyReadOp.Input{
+            .fd = std.io.getStdIn().handle,
+            .buffer = read_buffer[0..],
+            .offset = 0,
+            .timeout = AsyncIOUring.Timeout{ .ts = &ts, .flags = 0 },
+        },
+    });
+
+    try std.testing.expectEqual(read_cqe, error.Cancelled);
+}
+
 test "read with manual API" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
 
@@ -1176,12 +1206,31 @@ test "read with manual API" {
     defer ring.deinit();
     var async_ring = AsyncIOUring{ .ring = &ring };
 
-    var read_frame = async testRead(&async_ring);
+    var read_frame = async testReadWithManualAPI(&async_ring);
 
     try async_ring.run_event_loop();
 
     try nosuspend await read_frame;
 }
+
+test "read with manual API and overriden run" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var ring = IO_Uring.init(2, 0) catch |err| switch (err) {
+        error.SystemOutdated => return error.SkipZigTest,
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer ring.deinit();
+    var async_ring = AsyncIOUring{ .ring = &ring };
+
+    var read_frame = async testReadWithManualAPIAndOverridenRun(&async_ring);
+
+    try async_ring.run_event_loop();
+
+    try nosuspend await read_frame;
+}
+
 test "read with timeout returns cancelled" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
 
