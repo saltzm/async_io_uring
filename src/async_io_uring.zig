@@ -13,6 +13,72 @@ const ResumeNode = struct { frame: anyframe = undefined, result: linux.io_uring_
 // after calling functions on AsyncIOUring.
 pub const AsyncIOUringError = error{UnknownError};
 
+pub const Timeout = struct {
+    ts: *const os.linux.kernel_timespec,
+    flags: u32,
+};
+
+pub const Read = struct {
+    fd: os.fd_t,
+    buffer: []u8,
+    offset: u64,
+
+    pub const Error = error{
+        SocketNotConnected,
+        WouldBlock,
+        SystemResources,
+        ConnectionRefused,
+        ConnectionResetByPeer,
+        Cancelled,
+    } || os.UnexpectedError;
+
+    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return try ring.read(@ptrToInt(node), op.fd, op.buffer, op.offset);
+    }
+
+    // TODO: Use something more constrained than anyerror?
+    // TODO: Decide if I like this interface.
+    pub fn convertError(linux_err: os.E) @This().Error {
+        // More or less copied from
+        // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L801-L814
+        return switch (linux_err) {
+            .NOTCONN => error.SocketNotConnected,
+            .AGAIN => error.WouldBlock,
+            .NOMEM => error.SystemResources,
+            .CONNREFUSED => error.ConnectionRefused,
+            .CONNRESET => error.ConnectionResetByPeer,
+            .INTR, .CANCELED => error.Cancelled,
+            .BADF, .FAULT, .INVAL, .NOTSOCK => unreachable,
+            else => |err| os.unexpectedErrno(err),
+        };
+    }
+};
+
+pub const Recv = struct {
+    fd: os.fd_t,
+    buffer: []u8,
+    flags: u32,
+
+    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.recv(@ptrToInt(node), op.fd, op.buffer, op.flags);
+    }
+
+    pub fn convertError(linux_err: os.E) anyerror {
+        // More or less copied from
+        // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L546-L559.
+        return switch (linux_err) {
+            .NOTCONN => error.SocketNotConnected,
+            .AGAIN => error.WouldBlock,
+            .NOMEM => error.SystemResources,
+            .CONNREFUSED => error.ConnectionRefused,
+            .CONNRESET => error.ConnectionResetByPeer,
+            .CANCELED => error.Cancelled,
+            .BADF, .FAULT, .INVAL, .NOTSOCK => unreachable,
+            else => |err| os.unexpectedErrno(err),
+        };
+    }
+};
+
 /// Wrapper for IO_Uring that turns its functions into async functions that
 /// suspend after enqueuing entries to the submission queue and resume and
 /// return once a result is available in the completion queue.
@@ -78,14 +144,78 @@ pub const AsyncIOUring = struct {
         }
     }
 
-    pub const Timeout = struct {
-        ts: *const os.linux.kernel_timespec,
-        flags: u32,
-    };
+    pub fn do(self: *AsyncIOUring, async_op: anytype, op_timeout: ?Timeout, op_id: ?*usize) !linux.io_uring_cqe {
+        const AsyncOp = @TypeOf(async_op);
+        var node = ResumeNode{ .frame = @frame(), .result = undefined };
+        var attemptedRetry = false;
+        while (true) {
+            const sqe_or_error = expr: {
+                // Run the IO_Uring op.
+                const sqe = async_op.run(self.ring, &node) catch |err| {
+                    break :expr err;
+                };
+                // Attach a linked timeout if one is supplied.
+                if (op_timeout) |t| {
+                    sqe.flags |= linux.IOSQE_IO_LINK;
+                    // No user data - we don't care about the result, since it
+                    // will show up in the result of sqe as -INTR if the
+                    // timeout expires before the operation completes.
+                    _ = self.ring.link_timeout(0, t.ts, t.flags) catch |err| {
+                        break :expr err;
+                    };
+                }
+
+                break :expr sqe;
+            };
+
+            // Handle submission errors on either the 'run' or 'link_timeout' ops.
+            _ = sqe_or_error catch |err| {
+                switch (err) {
+                    error.SubmissionQueueFull => {
+                        // TODO: Double check this for when the op is submitted but the timeout can't be inserted bc q is full
+                        if (attemptedRetry) @panic("Submission queue not large enough");
+                        // Submit the current queue to clear it.
+                        const num_submitted = try self.ring.submit_and_wait(1);
+                        self.num_outstanding_events += num_submitted;
+                        attemptedRetry = true;
+                        // Try again - we should have enough space now.
+                        continue;
+                    },
+                    else => {
+                        // Return all other errors to the caller.
+                        return err;
+                    },
+                }
+            };
+
+            // Set the id for cancellation if one is supplied. Note: This must go
+            // prior to suspend.
+            if (op_id) |id| {
+                id.* = @ptrToInt(&node);
+            }
+
+            // Suspend here until resumed by the event loop when the result of
+            // this operation is processed in the completion queue.
+            suspend {}
+
+            // If the return code indicates success or a non-retryable error,
+            // return the result. Otherwise, we loop around and try again.
+            //
+            // TODO: INTR is actually expected if something is cancelled due to a timeout,
+            // and we don't want to retry in that case. Make this configurable or get rid
+            // of it.
+            if (node.result.res >= 0) { //  or (@intToEnum(os.E, -node.result.res) != .INTR)) {
+                return node.result;
+            } else {
+                return AsyncOp.convertError(@intToEnum(os.E, -node.result.res));
+            }
+        }
+    }
 
     /// Helper function to convert IO_Uring ops into async ops on the event
     /// loop.
     fn doAsync(self: *AsyncIOUring, async_op: anytype) !linux.io_uring_cqe {
+        const AsyncOp = @TypeOf(async_op);
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
         var attemptedRetry = false;
         while (true) {
@@ -99,8 +229,8 @@ pub const AsyncIOUring = struct {
                 // TODO: This is wicked cool that I can do this but this is also
                 // silly - should probably just have timeout be an optional
                 // parameter of doAsync.
-                if (@hasDecl(@TypeOf(async_op), "Input")) {
-                    if (@hasField(@TypeOf(async_op).Input, "timeout")) {
+                if (@hasDecl(AsyncOp, "Input")) {
+                    if (@hasField(AsyncOp.Input, "timeout")) {
                         if (async_op.input.timeout) |t| {
                             sqe.flags |= linux.IOSQE_IO_LINK;
                             // No user data - we don't care about the result, since it
@@ -119,6 +249,7 @@ pub const AsyncIOUring = struct {
             _ = sqe_or_error catch |err| {
                 switch (err) {
                     error.SubmissionQueueFull => {
+                        // TODO: Double check this for when the op is submitted but the timeout can't be inserted bc q is full
                         if (attemptedRetry) @panic("Submission queue not large enough");
                         // Submit the current queue to clear it.
                         const num_submitted = try self.ring.submit_and_wait(1);
@@ -140,7 +271,7 @@ pub const AsyncIOUring = struct {
             // TODO: This is wicked cool that I can do this but this is also
             // silly - should probably just have id be an optional
             // parameter of doAsync.
-            if (@hasField(@TypeOf(async_op), "id")) {
+            if (@hasField(AsyncOp, "id")) {
                 if (async_op.id) |id| {
                     id.* = @ptrToInt(&node);
                 }
@@ -162,9 +293,8 @@ pub const AsyncIOUring = struct {
                 // TODO: Decide whether I like this interface, and if so,
                 // convert all usages so I don't have to have this if statement
                 // here. Still cool it's possible though.
-                const AsyncOp = @TypeOf(async_op);
                 if (@hasDecl(AsyncOp, "convertError")) {
-                    return AsyncOp.convertError(node.result.res);
+                    return AsyncOp.convertError(@intToEnum(os.E, -node.result.res));
                 } else {
                     return node.result;
                 }
@@ -276,50 +406,19 @@ pub const AsyncIOUring = struct {
         }
     }
 
-    pub const ReadOp = struct {
-        pub const Input = struct {
-            fd: os.fd_t,
-            buffer: []u8,
-            offset: u64,
-            timeout: ?Timeout,
-        };
-
-        input: Input,
-        id: ?*usize,
-
-        pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-            return try ring.read(@ptrToInt(node), op.input.fd, op.input.buffer, op.input.offset);
-        }
-
-        // TODO: Use something more constrained than anyerror
-        // TODO: Decide if I like this interface.
-        pub fn convertError(linux_errno: i32) anyerror {
-            // More or less copied from
-            // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L801-L814
-            return switch (@intToEnum(os.E, -linux_errno)) {
-                .BADF => unreachable,
-                .FAULT => unreachable,
-                .INVAL => unreachable,
-                .NOTCONN => error.SocketNotConnected,
-                .NOTSOCK => unreachable,
-                .AGAIN => error.WouldBlock,
-                .NOMEM => error.SystemResources,
-                .CONNREFUSED => error.ConnectionRefused,
-                .CONNRESET => error.ConnectionResetByPeer,
-                .INTR, .CANCELED => error.Cancelled,
-                else => |err| os.unexpectedErrno(err),
-            };
-        }
-    };
+    // NEXT UP:
+    // TODO: Double check behavior for when the op is submitted but the timeout can't be inserted bc q is full
+    // * Consider dumping all ops like this in a union(enum) and get rid of function call shortcuts entirely.
+    // * Convert Client to use new API to see how it looks.
+    // * See if there are any common things besides cancellation/timeouts i didn't handle
+    // * Rename doAsync/make public
+    // * Better error sets?
 
     /// Queues (but does not submit) an SQE to perform a `read(2)`.
     /// Suspends execution until the resulting CQE is available and returns
     /// that CQE.
     pub fn read(self: *AsyncIOUring, fd: os.fd_t, buffer: []u8, offset: u64, to: ?Timeout, operation_id: ?*usize) !linux.io_uring_cqe {
-        return self.doAsync(ReadOp{
-            .input = ReadOp.Input{ .fd = fd, .buffer = buffer, .offset = offset, .timeout = to },
-            .id = operation_id,
-        });
+        return self.do(Read{ .fd = fd, .buffer = buffer, .offset = offset }, to, operation_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a `write(2)`.
@@ -1125,7 +1224,7 @@ fn testReadThatTimesOut(ring: *AsyncIOUring) !void {
     const ts = os.linux.kernel_timespec{ .tv_sec = 0, .tv_nsec = 10000 };
     // Try to read from stdin - there won't be any input so this should
     // reliably time out.
-    const read_cqe = ring.read(std.io.getStdIn().handle, read_buffer[0..], 0, AsyncIOUring.Timeout{ .ts = &ts, .flags = 0 }, null);
+    const read_cqe = ring.read(std.io.getStdIn().handle, read_buffer[0..], 0, Timeout{ .ts = &ts, .flags = 0 }, null);
     try std.testing.expectEqual(read_cqe, error.Cancelled);
 }
 
@@ -1153,44 +1252,39 @@ fn testReadWithManualAPI(ring: *AsyncIOUring) !void {
     const ts = os.linux.kernel_timespec{ .tv_sec = 0, .tv_nsec = 10000 };
     // Try to read from stdin - there won't be any input so this should
     // reliably time out.
-    const read_cqe = ring.doAsync(AsyncIOUring.ReadOp{
-        .input = AsyncIOUring.ReadOp.Input{
-            .fd = std.io.getStdIn().handle,
-            .buffer = read_buffer[0..],
-            .offset = 0,
-            .timeout = AsyncIOUring.Timeout{ .ts = &ts, .flags = 0 },
-        },
-        .id = null,
-    });
+    const read_cqe = ring.do(Read{
+        .fd = std.io.getStdIn().handle,
+        .buffer = read_buffer[0..],
+        .offset = 0,
+    }, .{ .ts = &ts, .flags = 0 }, null);
+
     try std.testing.expectEqual(read_cqe, error.Cancelled);
 }
 
 fn testReadWithManualAPIAndOverridenRun(ring: *AsyncIOUring) !void {
     var read_buffer = [_]u8{0} ** 20;
 
-    const MyReadOp = struct {
-        const Input = AsyncIOUring.ReadOp.Input;
-        const convertError = AsyncIOUring.ReadOp.convertError;
+    // Make a special op based on read.
+    const my_read: struct {
+        read: Read,
+        const convertError = Read.convertError;
 
-        input: Input,
-
-        pub fn run(op: @This(), my_ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        pub fn run(self: @This(), my_ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
             std.debug.print("\n THIS IS MY WORLD \n", .{});
-            return try my_ring.read(@ptrToInt(node), op.input.fd, op.input.buffer, op.input.offset);
+            return try my_ring.read(@ptrToInt(node), self.read.fd, self.read.buffer, self.read.offset);
         }
+    } = .{
+        .read = .{
+            .fd = std.io.getStdIn().handle,
+            .buffer = read_buffer[0..],
+            .offset = 0,
+        },
     };
 
     const ts = os.linux.kernel_timespec{ .tv_sec = 0, .tv_nsec = 10000 };
     // Try to read from stdin - there won't be any input so this should
     // reliably time out.
-    const read_cqe = ring.doAsync(MyReadOp{
-        .input = MyReadOp.Input{
-            .fd = std.io.getStdIn().handle,
-            .buffer = read_buffer[0..],
-            .offset = 0,
-            .timeout = AsyncIOUring.Timeout{ .ts = &ts, .flags = 0 },
-        },
-    });
+    const read_cqe = ring.do(my_read, Timeout{ .ts = &ts, .flags = 0 }, null);
 
     try std.testing.expectEqual(read_cqe, error.Cancelled);
 }

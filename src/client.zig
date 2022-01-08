@@ -23,7 +23,7 @@ pub fn run_client(ring: *AsyncIOUring) !void {
     defer {
         std.debug.print("Closing connection\n", .{});
         // TODO: Expose close on AsyncIOUring.
-        _ = ring.ring.close(0, server) catch {
+        _ = ring.close(server) catch {
             std.debug.print("Error closing\n", .{});
             std.os.exit(1);
         };
@@ -44,7 +44,14 @@ pub fn run_client(ring: *AsyncIOUring) !void {
         std.debug.print("Input: ", .{});
 
         const ts = os.linux.kernel_timespec{ .tv_sec = 10, .tv_nsec = 0 };
-        const read_cqe = ring.read(stdin_fd, input_buffer[0..], input_buffer.len, AsyncIOUring.Timeout{ .ts = &ts, .flags = 0 }, null) catch |err| {
+        const read_cqe = ring.do(
+            aiou.Read{ .fd = stdin_fd, .buffer = input_buffer[0..], .offset = input_buffer.len },
+            aiou.Timeout{
+                .ts = &ts,
+                .flags = 0,
+            },
+            null,
+        ) catch |err| {
             std.debug.print("Error in run_client: read {} \n", .{err});
             return err;
         };
@@ -58,7 +65,7 @@ pub fn run_client(ring: *AsyncIOUring) !void {
         };
 
         // Receive response.
-        const recv_cqe = ring.recv(server, input_buffer[0..], 0) catch |err| {
+        const recv_cqe = ring.do(aiou.Recv{ .fd = server, .buffer = input_buffer[0..], .flags = 0 }, null, null) catch |err| {
             std.debug.print("Error in run_client: recv {} \n", .{err});
             return err;
         };
