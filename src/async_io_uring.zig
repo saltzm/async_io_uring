@@ -18,27 +18,21 @@ pub const Timeout = struct {
     flags: u32,
 };
 
+fn defaultConvertError(linux_err: os.E) anyerror {
+    return os.unexpectedErrno(linux_err);
+}
+
 pub const Read = struct {
     fd: os.fd_t,
     buffer: []u8,
     offset: u64,
-
-    pub const Error = error{
-        SocketNotConnected,
-        WouldBlock,
-        SystemResources,
-        ConnectionRefused,
-        ConnectionResetByPeer,
-        Cancelled,
-    } || os.UnexpectedError;
 
     pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return try ring.read(@ptrToInt(node), op.fd, op.buffer, op.offset);
     }
 
     // TODO: Use something more constrained than anyerror?
-    // TODO: Decide if I like this interface.
-    pub fn convertError(linux_err: os.E) @This().Error {
+    pub fn convertError(linux_err: os.E) anyerror {
         // More or less copied from
         // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L801-L814
         return switch (linux_err) {
@@ -51,6 +45,28 @@ pub const Read = struct {
             .BADF, .FAULT, .INVAL, .NOTSOCK => unreachable,
             else => |err| os.unexpectedErrno(err),
         };
+    }
+};
+
+pub const Write = struct {
+    fd: os.fd_t,
+    buffer: []const u8,
+    offset: u64,
+    const convertError = defaultConvertError;
+
+    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.write(@ptrToInt(node), op.fd, op.buffer, op.offset);
+    }
+};
+
+pub const ReadV = struct {
+    fd: os.fd_t,
+    iovecs: []const os.iovec,
+    offset: u64,
+    const convertError = defaultConvertError;
+
+    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.readv(@ptrToInt(node), op.fd, op.iovecs, op.offset);
     }
 };
 
@@ -79,6 +95,24 @@ pub const Recv = struct {
     }
 };
 
+pub const Cancel = struct {
+    cancel_user_data: u64,
+    flags: u32,
+
+    const convertError = defaultConvertError;
+
+    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.cancel(@ptrToInt(node), op.cancel_user_data, op.flags);
+    }
+};
+
+pub const Nop = struct {
+    const convertError = defaultConvertError;
+    pub fn run(_: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.nop(@ptrToInt(node));
+    }
+};
+
 /// Wrapper for IO_Uring that turns its functions into async functions that
 /// suspend after enqueuing entries to the submission queue and resume and
 /// return once a result is available in the completion queue.
@@ -99,9 +133,6 @@ pub const Recv = struct {
 /// Note on abbreviations:
 ///      SQE == submission queue entry
 ///      CQE == completion queue entry
-///
-/// TODO: Add timeouts to things
-/// TODO: Add cancellation
 pub const AsyncIOUring = struct {
     ring: *IO_Uring = undefined,
 
@@ -153,9 +184,10 @@ pub const AsyncIOUring = struct {
         // and wait for enough space to be available in the queue to submit
         // this operation.
         {
+            // TODO: Allow AsyncOp to define the number of SQEs it requires -
+            // for cases where e.g. a custom op needs to do write + fsync
             const num_required_sqes: u32 = if (op_timeout) |_| 2 else 1;
 
-            // TODO: 2 in case there's a timeout
             if (self.ring.sq.sqes.len - self.ring.sq_ready() < num_required_sqes) {
                 const num_submitted = try self.ring.submit_and_wait(num_required_sqes);
                 self.num_outstanding_events += num_submitted;
@@ -163,6 +195,7 @@ pub const AsyncIOUring = struct {
         }
 
         while (true) {
+            // TODO: Rename 'submit' instead of 'run'.
             // Run the IO_Uring op.
             const sqe = try async_op.run(self.ring, &node);
             // Attach a linked timeout if one is supplied.
@@ -288,19 +321,6 @@ pub const AsyncIOUring = struct {
         }
     }
 
-    const Cancel = struct {
-        cancel_user_data: u64,
-        flags: u32,
-
-        pub fn convertError(linux_err: os.E) anyerror {
-            return os.unexpectedErrno(linux_err);
-        }
-
-        pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-            return ring.cancel(@ptrToInt(node), op.cancel_user_data, op.flags);
-        }
-    };
-
     /// Queues (but does not submit) an SQE to remove an existing operation.
     /// Returns a pointer to the SQE.
     ///
@@ -373,24 +393,10 @@ pub const AsyncIOUring = struct {
     /// For example, you could call `drain_previous_sqes()` on the returned SQE, to use the no-op to
     /// know when the ring is idle before acting on a kill signal.
     pub fn nop(self: *AsyncIOUring) !linux.io_uring_cqe {
-        const Op = struct {
-            pub fn run(_: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-                return ring.nop(@ptrToInt(node));
-            }
-        };
-
-        var result = try self.doAsync(Op{});
-
-        if (result.res >= 0) {
-            // Success.
-            return result;
-        } else {
-            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
-        }
+        return self.do(Nop{});
     }
 
     // NEXT UP:
-    // TODO: Double check behavior for when the op is submitted but the timeout can't be inserted bc q is full
     // * Consider dumping all ops like this in a union(enum) and get rid of function call shortcuts entirely.
     // * Convert Client to use new API to see how it looks.
     // * See if there are any common things besides cancellation/timeouts i didn't handle
@@ -413,28 +419,7 @@ pub const AsyncIOUring = struct {
         buffer: []const u8,
         offset: u64,
     ) !linux.io_uring_cqe {
-        const Op = struct {
-            fd: os.fd_t,
-            buffer: []const u8,
-            offset: u64,
-
-            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-                return ring.write(@ptrToInt(node), op.fd, op.buffer, op.offset);
-            }
-        };
-
-        var result = try self.doAsync(Op{ .fd = fd, .buffer = buffer, .offset = offset });
-
-        if (result.res >= 0) {
-            // Success.
-            return result;
-        } else {
-            // Retry on certain errors, return error on others.
-            return switch (@intToEnum(os.E, -result.res)) {
-                // TODO Fill out rest of possible error codes.
-                else => |err| os.unexpectedErrno(err),
-            };
-        }
+        return self.do(Write{ .fd = fd, .buffer = buffer, .offset = offset }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform a `preadv()`.
@@ -447,24 +432,7 @@ pub const AsyncIOUring = struct {
         iovecs: []const os.iovec,
         offset: u64,
     ) !linux.io_uring_cqe {
-        const Op = struct {
-            fd: os.fd_t,
-            iovecs: []const os.iovec,
-            offset: u64,
-            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-                return ring.readv(@ptrToInt(node), op.fd, op.iovecs, op.offset);
-            }
-        };
-
-        var result = try self.doAsync(Op{ .fd = fd, .iovecs = iovecs, .offset = offset });
-
-        if (result.res >= 0) {
-            // Success.
-            return result;
-        } else {
-            // TODO
-            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
-        }
+        return self.do(ReadV{ .fd = fd, .iovecs = iovecs, .offset = offset }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform a IORING_OP_READ_FIXED.
