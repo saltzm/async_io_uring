@@ -153,9 +153,11 @@ pub const AsyncIOUring = struct {
         // and wait for enough space to be available in the queue to submit
         // this operation.
         {
+            const num_required_sqes: u32 = if (op_timeout) |_| 2 else 1;
+
             // TODO: 2 in case there's a timeout
-            if (self.ring.sq.sqes.len - self.ring.sq_ready() < 2) {
-                const num_submitted = try self.ring.submit_and_wait(2);
+            if (self.ring.sq.sqes.len - self.ring.sq_ready() < num_required_sqes) {
+                const num_submitted = try self.ring.submit_and_wait(num_required_sqes);
                 self.num_outstanding_events += num_submitted;
             }
         }
@@ -286,6 +288,19 @@ pub const AsyncIOUring = struct {
         }
     }
 
+    const Cancel = struct {
+        cancel_user_data: u64,
+        flags: u32,
+
+        pub fn convertError(linux_err: os.E) anyerror {
+            return os.unexpectedErrno(linux_err);
+        }
+
+        pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+            return ring.cancel(@ptrToInt(node), op.cancel_user_data, op.flags);
+        }
+    };
+
     /// Queues (but does not submit) an SQE to remove an existing operation.
     /// Returns a pointer to the SQE.
     ///
@@ -299,23 +314,7 @@ pub const AsyncIOUring = struct {
         cancel_user_data: u64,
         flags: u32,
     ) !linux.io_uring_cqe {
-        const Op = struct {
-            cancel_user_data: u64,
-            flags: u32,
-            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-                return ring.cancel(@ptrToInt(node), op.cancel_user_data, op.flags);
-            }
-        };
-
-        var result = try self.doAsync(Op{ .cancel_user_data = cancel_user_data, .flags = flags });
-
-        if (result.res >= 0) {
-            // Success.
-            return result;
-        } else {
-            // TODO
-            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
-        }
+        return self.do(Cancel{ .cancel_user_data = cancel_user_data, .flags = flags }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform an `fsync(2)`.

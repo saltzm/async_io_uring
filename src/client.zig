@@ -22,7 +22,6 @@ pub fn run_client(ring: *AsyncIOUring) !void {
     const server = try os.socket(address.any.family, os.SOCK.STREAM | os.SOCK.CLOEXEC, 0);
     defer {
         std.debug.print("Closing connection\n", .{});
-        // TODO: Expose close on AsyncIOUring.
         _ = ring.close(server) catch {
             std.debug.print("Error closing\n", .{});
             std.os.exit(1);
@@ -30,10 +29,7 @@ pub fn run_client(ring: *AsyncIOUring) !void {
     }
 
     // Connect to the server.
-    _ = ring.connect(server, &address.any, address.getOsSockLen()) catch |err| {
-        std.debug.print("Error in run_client: connect {} \n", .{err});
-        return err;
-    };
+    _ = try ring.connect(server, &address.any, address.getOsSockLen());
 
     const stdin_file = std.io.getStdIn();
     const stdin_fd = stdin_file.handle;
@@ -43,11 +39,11 @@ pub fn run_client(ring: *AsyncIOUring) !void {
         // Read a line from stdin.
         std.debug.print("Input: ", .{});
 
-        const ts = os.linux.kernel_timespec{ .tv_sec = 10, .tv_nsec = 0 };
+        const read_timeout = os.linux.kernel_timespec{ .tv_sec = 10, .tv_nsec = 0 };
         const read_cqe = try ring.do(
             io.Read{ .fd = stdin_fd, .buffer = input_buffer[0..], .offset = input_buffer.len },
             io.Timeout{
-                .ts = &ts,
+                .ts = &read_timeout,
                 .flags = 0,
             },
             null,
@@ -56,16 +52,10 @@ pub fn run_client(ring: *AsyncIOUring) !void {
         const num_bytes_read = @intCast(usize, read_cqe.res);
 
         // Send it to the server.
-        _ = ring.send(server, input_buffer[0..num_bytes_read], 0) catch |err| {
-            std.debug.print("Error in run_client: send {} \n", .{err});
-            return err;
-        };
+        _ = try ring.send(server, input_buffer[0..num_bytes_read], 0);
 
         // Receive response.
-        const recv_cqe = ring.do(io.Recv{ .fd = server, .buffer = input_buffer[0..], .flags = 0 }, null, null) catch |err| {
-            std.debug.print("Error in run_client: recv {} \n", .{err});
-            return err;
-        };
+        const recv_cqe = try ring.do(io.Recv{ .fd = server, .buffer = input_buffer[0..], .flags = 0 }, null, null);
 
         const num_bytes_received = @intCast(usize, recv_cqe.res);
         std.debug.print("Received: {s}\n", .{input_buffer[0..num_bytes_received]});
@@ -78,7 +68,9 @@ pub fn main() !void {
 
     var async_ring = AsyncIOUring{ .ring = &ring };
 
-    _ = async run_client(&async_ring);
+    var client_frame = async run_client(&async_ring);
 
     try async_ring.run_event_loop();
+    // Important for propagating any errors received in run_client.
+    try nosuspend await client_frame;
 }
