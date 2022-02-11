@@ -70,6 +70,41 @@ pub const ReadV = struct {
     }
 };
 
+pub const ReadFixed = struct {
+    fd: os.fd_t,
+    buffer: *os.iovec,
+    offset: u64,
+    buffer_index: u16,
+    const convertError = defaultConvertError;
+    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.read_fixed(@ptrToInt(node), op.fd, op.buffer, op.offset, op.buffer_index);
+    }
+};
+
+pub const WriteV = struct {
+    fd: os.fd_t,
+    iovecs: []const os.iovec_const,
+    offset: u64,
+
+    const convertError = defaultConvertError;
+
+    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.writev(@ptrToInt(node), op.fd, op.iovecs, op.offset);
+    }
+};
+
+pub const WriteFixed = struct {
+    fd: os.fd_t,
+    buffer: *os.iovec,
+    offset: u64,
+    buffer_index: u16,
+    const convertError = defaultConvertError;
+
+    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.write_fixed(@ptrToInt(node), op.fd, op.buffer, op.offset, op.buffer_index);
+    }
+};
+
 pub const Recv = struct {
     fd: os.fd_t,
     buffer: []u8,
@@ -447,25 +482,7 @@ pub const AsyncIOUring = struct {
         offset: u64,
         buffer_index: u16,
     ) !linux.io_uring_cqe {
-        const Op = struct {
-            fd: os.fd_t,
-            buffer: *os.iovec,
-            offset: u64,
-            buffer_index: u16,
-            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-                return ring.readv(@ptrToInt(node), op.fd, op.buffer, op.offset, op.buffer_index);
-            }
-        };
-
-        var result = try self.doAsync(Op{ .fd = fd, .buffer = buffer, .offset = offset, .buffer_index = buffer_index });
-
-        if (result.res >= 0) {
-            // Success.
-            return result;
-        } else {
-            // TODO
-            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
-        }
+        return self.do(ReadFixed{ .fd = fd, .buffer = buffer, .offset = offset, .buffer_index = buffer_index }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform a `pwritev()`.
@@ -478,25 +495,7 @@ pub const AsyncIOUring = struct {
         iovecs: []const os.iovec_const,
         offset: u64,
     ) !linux.io_uring_cqe {
-        const Op = struct {
-            fd: os.fd_t,
-            iovecs: []const os.iovec_const,
-            offset: u64,
-
-            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-                return ring.writev(@ptrToInt(node), op.fd, op.iovecs, op.offset);
-            }
-        };
-
-        var result = try self.doAsync(Op{ .fd = fd, .iovecs = iovecs, .offset = offset });
-
-        if (result.res >= 0) {
-            // Success.
-            return result;
-        } else {
-            // TODO
-            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
-        }
+        return self.do(WriteV{ .fd = fd, .iovecs = iovecs, .offset = offset }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform a IORING_OP_WRITE_FIXED.
@@ -511,26 +510,7 @@ pub const AsyncIOUring = struct {
         offset: u64,
         buffer_index: u16,
     ) !linux.io_uring_cqe {
-        const Op = struct {
-            fd: os.fd_t,
-            buffer: *os.iovec,
-            offset: u64,
-            buffer_index: u16,
-
-            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-                return ring.write_fixed(@ptrToInt(node), op.fd, op.buffer, op.offset, op.buffer_index);
-            }
-        };
-
-        var result = try self.doAsync(Op{ .fd = fd, .buffer = buffer, .offset = offset, .buffer_index = buffer_index });
-
-        if (result.res >= 0) {
-            // Success.
-            return result;
-        } else {
-            // TODO
-            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
-        }
+        return self.do(WriteFixed{ .fd = fd, .buffer = buffer, .offset = offset, .buffer_index = buffer_index }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform an `accept4(2)` on a socket.
