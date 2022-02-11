@@ -147,46 +147,30 @@ pub const AsyncIOUring = struct {
     pub fn do(self: *AsyncIOUring, async_op: anytype, op_timeout: ?Timeout, op_id: ?*usize) !linux.io_uring_cqe {
         const AsyncOp = @TypeOf(async_op);
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        var attemptedRetry = false;
+
+        // Check if the submission queue has enough space for this operation
+        // and its timeout, and if not, submit the current entries in the queue
+        // and wait for enough space to be available in the queue to submit
+        // this operation.
+        {
+            // TODO: 2 in case there's a timeout
+            if (self.ring.sq.sqes.len - self.ring.sq_ready() < 2) {
+                const num_submitted = try self.ring.submit_and_wait(2);
+                self.num_outstanding_events += num_submitted;
+            }
+        }
+
         while (true) {
-            const sqe_or_error = expr: {
-                // Run the IO_Uring op.
-                const sqe = async_op.run(self.ring, &node) catch |err| {
-                    break :expr err;
-                };
-                // Attach a linked timeout if one is supplied.
-                if (op_timeout) |t| {
-                    sqe.flags |= linux.IOSQE_IO_LINK;
-                    // No user data - we don't care about the result, since it
-                    // will show up in the result of sqe as -INTR if the
-                    // timeout expires before the operation completes.
-                    _ = self.ring.link_timeout(0, t.ts, t.flags) catch |err| {
-                        break :expr err;
-                    };
-                }
-
-                break :expr sqe;
-            };
-
-            // Handle submission errors on either the 'run' or 'link_timeout' ops.
-            _ = sqe_or_error catch |err| {
-                switch (err) {
-                    error.SubmissionQueueFull => {
-                        // TODO: Double check this for when the op is submitted but the timeout can't be inserted bc q is full
-                        if (attemptedRetry) @panic("Submission queue not large enough");
-                        // Submit the current queue to clear it.
-                        const num_submitted = try self.ring.submit_and_wait(1);
-                        self.num_outstanding_events += num_submitted;
-                        attemptedRetry = true;
-                        // Try again - we should have enough space now.
-                        continue;
-                    },
-                    else => {
-                        // Return all other errors to the caller.
-                        return err;
-                    },
-                }
-            };
+            // Run the IO_Uring op.
+            const sqe = try async_op.run(self.ring, &node);
+            // Attach a linked timeout if one is supplied.
+            if (op_timeout) |t| {
+                sqe.flags |= linux.IOSQE_IO_LINK;
+                // No user data - we don't care about the result, since it
+                // will show up in the result of sqe as -INTR if the
+                // timeout expires before the operation completes.
+                _ = try self.ring.link_timeout(0, t.ts, t.flags);
+            }
 
             // Set the id for cancellation if one is supplied. Note: This must go
             // prior to suspend.
@@ -1343,6 +1327,27 @@ test "read with timeout returns cancelled" {
     try nosuspend await read_frame;
 }
 
+test "read with timeout returns cancelled with only 1 submission queue entry free" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var ring = IO_Uring.init(4, 0) catch |err| switch (err) {
+        error.SystemOutdated => return error.SkipZigTest,
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer ring.deinit();
+    var async_ring = AsyncIOUring{ .ring = &ring };
+
+    _ = try ring.nop(0);
+    _ = try ring.nop(0);
+    _ = try ring.nop(0);
+    var read_frame = async testReadThatTimesOut(&async_ring);
+
+    try async_ring.run_event_loop();
+
+    try nosuspend await read_frame;
+}
+
 fn testReadThatIsCancelled(ring: *AsyncIOUring) !void {
     var read_buffer = [_]u8{0} ** 20;
 
@@ -1378,53 +1383,53 @@ test "read that is cancelled returns cancelled" {
     try nosuspend await read_frame;
 }
 
-test "read with timeout repro" {
-    if (builtin.os.tag != .linux) return error.SkipZigTest;
-
-    var ring = IO_Uring.init(4, 0) catch |err| switch (err) {
-        error.SystemOutdated => return error.SkipZigTest,
-        error.PermissionDenied => return error.SkipZigTest,
-        else => return err,
-    };
-    defer ring.deinit();
-
-    var read_buffer = [_]u8{0} ** 20;
-    const read_user_data = 8;
-    var read_sqe = try ring.read(read_user_data, std.io.getStdIn().handle, read_buffer[0..], 0);
-    read_sqe.flags |= linux.IOSQE_IO_LINK;
-
-    const ts = os.linux.kernel_timespec{ .tv_sec = 0, .tv_nsec = 10000 };
-    const timeout_user_data = 9;
-    _ = try ring.link_timeout(timeout_user_data, &ts, 0);
-
-    // Wait for both to return.
-    const num_submitted = try ring.submit();
-    try std.testing.expectEqual(num_submitted, 2);
-
-    var cqes: [256]linux.io_uring_cqe = undefined;
-
-    const num_ready_cqes = try ring.copy_cqes(cqes[0..], num_submitted);
-
-    try std.testing.expectEqual(num_ready_cqes, num_submitted);
-
-    for (cqes[0..num_ready_cqes]) |cqe| {
-        if (cqe.user_data == read_user_data) {
-            // This fails because res is actually E.INTR - That contradicts the
-            // comments on link_timeout.
-            // TODO
-            // try std.testing.expectEqual(-cqe.res, @intCast(i32, @enumToInt(os.E.CANCELED)));
-            // This would pass.
-            try std.testing.expectEqual(-cqe.res, @intCast(i32, @enumToInt(os.E.INTR)));
-        } else if (cqe.user_data == timeout_user_data) {
-            // This fails because res is actually E.ALREADY. That contradicts the
-            // comments on link_timeout and in the man pages for
-            // io_uring_setup, which say it should be E.TIME since the
-            // dependent request should not have completed before the timeout.
-            // try std.testing.expectEqual(-cqe.res, @intCast(i32, @enumToInt(os.E.TIME)));
-            // This would pass.
-            try std.testing.expectEqual(-cqe.res, @intCast(i32, @enumToInt(os.E.ALREADY)));
-        } else {
-            unreachable;
-        }
-    }
-}
+//test "read with timeout repro" {
+//    if (builtin.os.tag != .linux) return error.SkipZigTest;
+//
+//    var ring = IO_Uring.init(4, 0) catch |err| switch (err) {
+//        error.SystemOutdated => return error.SkipZigTest,
+//        error.PermissionDenied => return error.SkipZigTest,
+//        else => return err,
+//    };
+//    defer ring.deinit();
+//
+//    var read_buffer = [_]u8{0} ** 20;
+//    const read_user_data = 8;
+//    var read_sqe = try ring.read(read_user_data, std.io.getStdIn().handle, read_buffer[0..], 0);
+//    read_sqe.flags |= linux.IOSQE_IO_LINK;
+//
+//    const ts = os.linux.kernel_timespec{ .tv_sec = 0, .tv_nsec = 10000 };
+//    const timeout_user_data = 9;
+//    _ = try ring.link_timeout(timeout_user_data, &ts, 0);
+//
+//    // Wait for both to return.
+//    const num_submitted = try ring.submit();
+//    try std.testing.expectEqual(num_submitted, 2);
+//
+//    var cqes: [256]linux.io_uring_cqe = undefined;
+//
+//    const num_ready_cqes = try ring.copy_cqes(cqes[0..], num_submitted);
+//
+//    try std.testing.expectEqual(num_ready_cqes, num_submitted);
+//
+//    for (cqes[0..num_ready_cqes]) |cqe| {
+//        if (cqe.user_data == read_user_data) {
+//            // This fails because res is actually E.INTR - That contradicts the
+//            // comments on link_timeout.
+//            // TODO
+//            // try std.testing.expectEqual(-cqe.res, @intCast(i32, @enumToInt(os.E.CANCELED)));
+//            // This would pass.
+//            try std.testing.expectEqual(-cqe.res, @intCast(i32, @enumToInt(os.E.INTR)));
+//        } else if (cqe.user_data == timeout_user_data) {
+//            // This fails because res is actually E.ALREADY. That contradicts the
+//            // comments on link_timeout and in the man pages for
+//            // io_uring_setup, which say it should be E.TIME since the
+//            // dependent request should not have completed before the timeout.
+//            // try std.testing.expectEqual(-cqe.res, @intCast(i32, @enumToInt(os.E.TIME)));
+//            // This would pass.
+//            try std.testing.expectEqual(-cqe.res, @intCast(i32, @enumToInt(os.E.ALREADY)));
+//        } else {
+//            unreachable;
+//        }
+//    }
+//}

@@ -5,8 +5,8 @@ const net = std.net;
 const os = std.os;
 const linux = os.linux;
 
-const aiou = @import("async_io_uring.zig");
-const AsyncIOUring = aiou.AsyncIOUring;
+const io = @import("async_io_uring.zig");
+const AsyncIOUring = io.AsyncIOUring;
 
 // Echo client. Reads a string from stdin, sends it to the server, and prints
 // the response.
@@ -44,17 +44,14 @@ pub fn run_client(ring: *AsyncIOUring) !void {
         std.debug.print("Input: ", .{});
 
         const ts = os.linux.kernel_timespec{ .tv_sec = 10, .tv_nsec = 0 };
-        const read_cqe = ring.do(
-            aiou.Read{ .fd = stdin_fd, .buffer = input_buffer[0..], .offset = input_buffer.len },
-            aiou.Timeout{
+        const read_cqe = try ring.do(
+            io.Read{ .fd = stdin_fd, .buffer = input_buffer[0..], .offset = input_buffer.len },
+            io.Timeout{
                 .ts = &ts,
                 .flags = 0,
             },
             null,
-        ) catch |err| {
-            std.debug.print("Error in run_client: read {} \n", .{err});
-            return err;
-        };
+        );
 
         const num_bytes_read = @intCast(usize, read_cqe.res);
 
@@ -65,7 +62,7 @@ pub fn run_client(ring: *AsyncIOUring) !void {
         };
 
         // Receive response.
-        const recv_cqe = ring.do(aiou.Recv{ .fd = server, .buffer = input_buffer[0..], .flags = 0 }, null, null) catch |err| {
+        const recv_cqe = ring.do(io.Recv{ .fd = server, .buffer = input_buffer[0..], .flags = 0 }, null, null) catch |err| {
             std.debug.print("Error in run_client: recv {} \n", .{err});
             return err;
         };
