@@ -105,6 +105,72 @@ pub const WriteFixed = struct {
     }
 };
 
+pub const Accept = struct {
+    fd: os.fd_t,
+    addr: *os.sockaddr,
+    addrlen: *os.socklen_t,
+    flags: u32,
+
+    pub fn convertError(linux_err: os.E) anyerror {
+        return switch (linux_err) {
+            .AGAIN => error.WouldBlock,
+            .BADF => unreachable,
+            .CONNABORTED => error.ConnectionAborted,
+            .FAULT => unreachable,
+            .INVAL => error.SocketNotListening,
+            .NOTSOCK => unreachable,
+            .MFILE => error.ProcessFdQuotaExceeded,
+            .NFILE => error.SystemFdQuotaExceeded,
+            .NOBUFS => error.SystemResources,
+            .NOMEM => error.SystemResources,
+            .OPNOTSUPP => unreachable,
+            .PROTO => error.ProtocolFailure,
+            .PERM => error.BlockedByFirewall,
+            .CANCELED => error.Cancelled,
+            else => |err| return os.unexpectedErrno(err),
+        };
+    }
+
+    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.accept(@ptrToInt(node), op.fd, op.addr, op.addrlen, op.flags);
+    }
+};
+
+pub const Connect = struct {
+    fd: os.fd_t,
+    addr: *const os.sockaddr,
+    addrlen: os.socklen_t,
+    pub fn convertError(linux_err: os.E) anyerror {
+        // More or less copied from
+        // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L682-L704.
+        return switch (linux_err) {
+            .ACCES => error.PermissionDenied,
+            .PERM => error.PermissionDenied,
+            .ADDRINUSE => error.AddressInUse,
+            .ADDRNOTAVAIL => error.AddressNotAvailable,
+            .AFNOSUPPORT => error.AddressFamilyNotSupported,
+            .AGAIN, .INPROGRESS => error.WouldBlock,
+            .ALREADY => error.ConnectionPending,
+            .BADF => unreachable,
+            .CONNREFUSED => error.ConnectionRefused,
+            .CONNRESET => error.ConnectionResetByPeer,
+            .FAULT => unreachable,
+            .ISCONN => unreachable,
+            .NETUNREACH => error.NetworkUnreachable,
+            .NOTSOCK => unreachable,
+            .PROTOTYPE => unreachable,
+            .TIMEDOUT => error.ConnectionTimedOut,
+            .NOENT => error.FileNotFound,
+            .CANCELED => error.Cancelled,
+            else => |err| os.unexpectedErrno(err),
+        };
+    }
+
+    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.connect(@ptrToInt(node), op.fd, op.addr, op.addrlen);
+    }
+};
+
 pub const Recv = struct {
     fd: os.fd_t,
     buffer: []u8,
@@ -129,6 +195,69 @@ pub const Recv = struct {
         };
     }
 };
+pub const Send = struct {
+    fd: os.fd_t,
+    buffer: []const u8,
+    flags: u32,
+
+    pub fn convertError(linux_err: os.E) anyerror {
+        // More or less copied from https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L604-L632.
+        return switch (linux_err) {
+            .ACCES => error.AccessDenied,
+            .AGAIN => error.WouldBlock,
+            .ALREADY => error.FastOpenAlreadyInProgress,
+            .BADF => unreachable,
+            .CONNRESET => error.ConnectionResetByPeer,
+            .DESTADDRREQ => unreachable,
+            .FAULT => unreachable,
+            .INVAL => unreachable,
+            .ISCONN => unreachable,
+            .MSGSIZE => error.MessageTooBig,
+            .NOBUFS => error.SystemResources,
+            .NOMEM => error.SystemResources,
+            .NOTSOCK => unreachable,
+            .OPNOTSUPP => unreachable,
+            .PIPE => error.BrokenPipe,
+            .AFNOSUPPORT => error.AddressFamilyNotSupported,
+            .LOOP => error.SymLinkLoop,
+            .NAMETOOLONG => error.NameTooLong,
+            .NOENT => error.FileNotFound,
+            .NOTDIR => error.NotDir,
+            .HOSTUNREACH => error.NetworkUnreachable,
+            .NETUNREACH => error.NetworkUnreachable,
+            .NOTCONN => error.SocketNotConnected,
+            .NETDOWN => error.NetworkSubsystemFailed,
+            .CANCELED => error.Cancelled,
+            else => |err| os.unexpectedErrno(err),
+        };
+    }
+
+    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.send(@ptrToInt(node), op.fd, op.buffer, op.flags);
+    }
+};
+
+pub const OpenAt = struct {
+    fd: os.fd_t,
+    path: [*:0]const u8,
+    flags: u32,
+    mode: os.mode_t,
+
+    const convertError = defaultConvertError;
+
+    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.openat(@ptrToInt(node), op.fd, op.path, op.flags, op.mode);
+    }
+};
+
+pub const Close = struct {
+    fd: os.fd_t,
+
+    const convertError = defaultConvertError;
+    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.close(@ptrToInt(node), op.fd);
+    }
+};
 
 pub const Cancel = struct {
     cancel_user_data: u64,
@@ -145,6 +274,19 @@ pub const Nop = struct {
     const convertError = defaultConvertError;
     pub fn run(_: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.nop(@ptrToInt(node));
+    }
+};
+
+pub const EpollCtl = struct {
+    epfd: os.fd_t,
+    fd: os.fd_t,
+    op: u32,
+    ev: ?*linux.epoll_event,
+
+    const convertError = defaultConvertError;
+
+    pub fn run(this: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.epoll_ctl(@ptrToInt(node), this.epfd, this.fd, this.op, this.ev);
     }
 };
 
@@ -266,96 +408,6 @@ pub const AsyncIOUring = struct {
         }
     }
 
-    /// Helper function to convert IO_Uring ops into async ops on the event
-    /// loop.
-    fn doAsync(self: *AsyncIOUring, async_op: anytype) !linux.io_uring_cqe {
-        const AsyncOp = @TypeOf(async_op);
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        var attemptedRetry = false;
-        while (true) {
-            const sqe_or_error = expr: {
-                // Run the IO_Uring op.
-                const sqe = async_op.run(self.ring, &node) catch |err| {
-                    break :expr err;
-                };
-                // Attach a linked timeout if one is supplied.
-                //
-                // TODO: This is wicked cool that I can do this but this is also
-                // silly - should probably just have timeout be an optional
-                // parameter of doAsync.
-                if (@hasDecl(AsyncOp, "Input")) {
-                    if (@hasField(AsyncOp.Input, "timeout")) {
-                        if (async_op.input.timeout) |t| {
-                            sqe.flags |= linux.IOSQE_IO_LINK;
-                            // No user data - we don't care about the result, since it
-                            // will show up in the result of sqe as -INTR if the
-                            // timeout expires before the operation completes.
-                            _ = self.ring.link_timeout(0, t.ts, t.flags) catch |err| {
-                                break :expr err;
-                            };
-                        }
-                    }
-                }
-                break :expr sqe;
-            };
-
-            // Handle submission errors on either the 'run' or 'link_timeout' ops.
-            _ = sqe_or_error catch |err| {
-                switch (err) {
-                    error.SubmissionQueueFull => {
-                        // TODO: Double check this for when the op is submitted but the timeout can't be inserted bc q is full
-                        if (attemptedRetry) @panic("Submission queue not large enough");
-                        // Submit the current queue to clear it.
-                        const num_submitted = try self.ring.submit_and_wait(1);
-                        self.num_outstanding_events += num_submitted;
-                        attemptedRetry = true;
-                        // Try again - we should have enough space now.
-                        continue;
-                    },
-                    else => {
-                        // Return all other errors to the caller.
-                        return err;
-                    },
-                }
-            };
-
-            // Set the id for cancellation if one is supplied. Note: This must go
-            // prior to suspend.
-            //
-            // TODO: This is wicked cool that I can do this but this is also
-            // silly - should probably just have id be an optional
-            // parameter of doAsync.
-            if (@hasField(AsyncOp, "id")) {
-                if (async_op.id) |id| {
-                    id.* = @ptrToInt(&node);
-                }
-            }
-
-            // Suspend here until resumed by the event loop when the result of
-            // this operation is processed in the completion queue.
-            suspend {}
-
-            // If the return code indicates success or a non-retryable error,
-            // return the result. Otherwise, we loop around and try again.
-            //
-            // TODO: INTR is actually expected if something is cancelled due to a timeout,
-            // and we don't want to retry in that case. Make this configurable or get rid
-            // of it.
-            if (node.result.res >= 0) { //  or (@intToEnum(os.E, -node.result.res) != .INTR)) {
-                return node.result;
-            } else {
-                // TODO: Decide whether I like this interface, and if so,
-                // convert all usages so I don't have to have this if statement
-                // here. Still cool it's possible though.
-                if (@hasDecl(AsyncOp, "convertError")) {
-                    return AsyncOp.convertError(@intToEnum(os.E, -node.result.res));
-                } else {
-                    return node.result;
-                }
-            }
-        }
-    }
-
     /// Queues (but does not submit) an SQE to remove an existing operation.
     /// Returns a pointer to the SQE.
     ///
@@ -435,7 +487,6 @@ pub const AsyncIOUring = struct {
     // * Consider dumping all ops like this in a union(enum) and get rid of function call shortcuts entirely.
     // * Convert Client to use new API to see how it looks.
     // * See if there are any common things besides cancellation/timeouts i didn't handle
-    // * Rename doAsync/make public
     // * Better error sets?
 
     /// Queues (but does not submit) an SQE to perform a `read(2)`.
@@ -523,42 +574,7 @@ pub const AsyncIOUring = struct {
         addrlen: *os.socklen_t,
         flags: u32,
     ) !linux.io_uring_cqe {
-        const Op = struct {
-            fd: os.fd_t,
-            addr: *os.sockaddr,
-            addrlen: *os.socklen_t,
-            flags: u32,
-            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-                return ring.accept(@ptrToInt(node), op.fd, op.addr, op.addrlen, op.flags);
-            }
-        };
-
-        var result = try self.doAsync(Op{ .fd = fd, .addr = addr, .addrlen = addrlen, .flags = flags });
-
-        if (result.res >= 0) {
-            // Success.
-            return result;
-        } else {
-            // More or less copied from
-            // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L480-L497.
-            return switch (@intToEnum(os.E, -result.res)) {
-                .AGAIN => error.WouldBlock,
-                .BADF => unreachable,
-                .CONNABORTED => error.ConnectionAborted,
-                .FAULT => unreachable,
-                .INVAL => error.SocketNotListening,
-                .NOTSOCK => unreachable,
-                .MFILE => error.ProcessFdQuotaExceeded,
-                .NFILE => error.SystemFdQuotaExceeded,
-                .NOBUFS => error.SystemResources,
-                .NOMEM => error.SystemResources,
-                .OPNOTSUPP => unreachable,
-                .PROTO => error.ProtocolFailure,
-                .PERM => error.BlockedByFirewall,
-                .CANCELED => error.Cancelled,
-                else => |err| return os.unexpectedErrno(err),
-            };
-        }
+        return self.do(Accept{ .fd = fd, .addr = addr, .addrlen = addrlen, .flags = flags }, null, null);
     }
 
     /// Queue (but does not submit) an SQE to perform a `connect(2)` on a socket.
@@ -570,45 +586,7 @@ pub const AsyncIOUring = struct {
         addr: *const os.sockaddr,
         addrlen: os.socklen_t,
     ) !linux.io_uring_cqe {
-        const Op = struct {
-            fd: os.fd_t,
-            addr: *const os.sockaddr,
-            addrlen: os.socklen_t,
-            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-                return ring.connect(@ptrToInt(node), op.fd, op.addr, op.addrlen);
-            }
-        };
-
-        var result = try self.doAsync(Op{ .fd = fd, .addr = addr, .addrlen = addrlen });
-
-        if (result.res >= 0) {
-            // Success.
-            return result;
-        } else {
-            // More or less copied from
-            // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L682-L704.
-            return switch (@intToEnum(os.E, -result.res)) {
-                .ACCES => error.PermissionDenied,
-                .PERM => error.PermissionDenied,
-                .ADDRINUSE => error.AddressInUse,
-                .ADDRNOTAVAIL => error.AddressNotAvailable,
-                .AFNOSUPPORT => error.AddressFamilyNotSupported,
-                .AGAIN, .INPROGRESS => error.WouldBlock,
-                .ALREADY => error.ConnectionPending,
-                .BADF => unreachable,
-                .CONNREFUSED => error.ConnectionRefused,
-                .CONNRESET => error.ConnectionResetByPeer,
-                .FAULT => unreachable,
-                .ISCONN => unreachable,
-                .NETUNREACH => error.NetworkUnreachable,
-                .NOTSOCK => unreachable,
-                .PROTOTYPE => unreachable,
-                .TIMEDOUT => error.ConnectionTimedOut,
-                .NOENT => error.FileNotFound,
-                .CANCELED => error.Cancelled,
-                else => |err| os.unexpectedErrno(err),
-            };
-        }
+        return self.do(Connect{ .fd = fd, .addr = addr, .addrlen = addrlen }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform a `epoll_ctl(2)`.
@@ -620,26 +598,7 @@ pub const AsyncIOUring = struct {
         op: u32,
         ev: ?*linux.epoll_event,
     ) !linux.io_uring_cqe {
-        const Op = struct {
-            epfd: os.fd_t,
-            fd: os.fd_t,
-            op: u32,
-            ev: ?*linux.epoll_event,
-
-            pub fn run(this: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-                return ring.epoll_ctl(@ptrToInt(node), this.epfd, this.fd, this.op, this.ev);
-            }
-        };
-
-        var result = try self.doAsync(Op{ .epfd = epfd, .fd = fd, .op = op, .ev = ev });
-
-        if (result.res >= 0) {
-            // Success.
-            return result;
-        } else {
-            // TODO
-            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
-        }
+        return self.do(EpollCtl{ .epfd = epfd, .fd = fd, .op = op, .ev = ev }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform a `recv(2)`.
@@ -651,37 +610,7 @@ pub const AsyncIOUring = struct {
         buffer: []u8,
         flags: u32,
     ) !linux.io_uring_cqe {
-        const Op = struct {
-            fd: os.fd_t,
-            buffer: []u8,
-            flags: u32,
-
-            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-                return ring.recv(@ptrToInt(node), op.fd, op.buffer, op.flags);
-            }
-        };
-
-        var result = try self.doAsync(Op{ .fd = fd, .buffer = buffer, .flags = flags });
-
-        if (result.res >= 0) {
-            return result;
-        } else {
-            // More or less copied from
-            // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L546-L559.
-            return switch (@intToEnum(os.E, -result.res)) {
-                .BADF => unreachable,
-                .FAULT => unreachable,
-                .INVAL => unreachable,
-                .NOTCONN => error.SocketNotConnected,
-                .NOTSOCK => unreachable,
-                .AGAIN => error.WouldBlock,
-                .NOMEM => error.SystemResources,
-                .CONNREFUSED => error.ConnectionRefused,
-                .CONNRESET => error.ConnectionResetByPeer,
-                .CANCELED => error.Cancelled,
-                else => |err| os.unexpectedErrno(err),
-            };
-        }
+        return self.do(Recv{ .fd = fd, .buffer = buffer, .flags = flags }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform a `send(2)`.
@@ -693,51 +622,7 @@ pub const AsyncIOUring = struct {
         buffer: []const u8,
         flags: u32,
     ) !linux.io_uring_cqe {
-        const Op = struct {
-            fd: os.fd_t,
-            buffer: []const u8,
-            flags: u32,
-            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-                return ring.send(@ptrToInt(node), op.fd, op.buffer, op.flags);
-            }
-        };
-
-        var result = try self.doAsync(Op{ .fd = fd, .buffer = buffer, .flags = flags });
-
-        if (result.res >= 0) {
-            // Success.
-            return result;
-        } else {
-            // More or less copied from https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L604-L632.
-            return switch (@intToEnum(os.E, -result.res)) {
-                .ACCES => error.AccessDenied,
-                .AGAIN => error.WouldBlock,
-                .ALREADY => error.FastOpenAlreadyInProgress,
-                .BADF => unreachable,
-                .CONNRESET => error.ConnectionResetByPeer,
-                .DESTADDRREQ => unreachable,
-                .FAULT => unreachable,
-                .INVAL => unreachable,
-                .ISCONN => unreachable,
-                .MSGSIZE => error.MessageTooBig,
-                .NOBUFS => error.SystemResources,
-                .NOMEM => error.SystemResources,
-                .NOTSOCK => unreachable,
-                .OPNOTSUPP => unreachable,
-                .PIPE => error.BrokenPipe,
-                .AFNOSUPPORT => error.AddressFamilyNotSupported,
-                .LOOP => error.SymLinkLoop,
-                .NAMETOOLONG => error.NameTooLong,
-                .NOENT => error.FileNotFound,
-                .NOTDIR => error.NotDir,
-                .HOSTUNREACH => error.NetworkUnreachable,
-                .NETUNREACH => error.NetworkUnreachable,
-                .NOTCONN => error.SocketNotConnected,
-                .NETDOWN => error.NetworkSubsystemFailed,
-                .CANCELED => error.Cancelled,
-                else => |err| os.unexpectedErrno(err),
-            };
-        }
+        return self.do(Send{ .fd = fd, .buffer = buffer, .flags = flags }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform an `openat(2)`.
@@ -749,48 +634,13 @@ pub const AsyncIOUring = struct {
         flags: u32,
         mode: os.mode_t,
     ) !linux.io_uring_cqe {
-        const Op = struct {
-            fd: os.fd_t,
-            path: [*:0]const u8,
-            flags: u32,
-            mode: os.mode_t,
-
-            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-                return ring.openat(@ptrToInt(node), op.fd, op.path, op.flags, op.mode);
-            }
-        };
-
-        var result = try self.doAsync(Op{ .fd = fd, .path = path, .flags = flags, .mode = mode });
-
-        if (result.res >= 0) {
-            // Success.
-            return result;
-        } else {
-            // TODO
-            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
-        }
+        return self.do(OpenAt{ .fd = fd, .path = path, .flags = flags, .mode = mode }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform a `close(2)`.
     /// Returns a pointer to the SQE.
     pub fn close(self: *AsyncIOUring, fd: os.fd_t) !linux.io_uring_cqe {
-        const Op = struct {
-            fd: os.fd_t,
-
-            pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-                return ring.close(@ptrToInt(node), op.fd);
-            }
-        };
-
-        var result = try self.doAsync(Op{ .fd = fd });
-
-        if (result.res >= 0) {
-            // Success.
-            return result;
-        } else {
-            // TODO
-            return os.unexpectedErrno(@intToEnum(os.E, -result.res));
-        }
+        return self.do(Close{ .fd = fd }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to register a timeout operation.
