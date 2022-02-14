@@ -6,12 +6,10 @@ const linux = os.linux;
 
 // Used as user data for submission queue entries, so that the event loop can
 // have resume the callers frame.
-const ResumeNode = struct { frame: anyframe = undefined, result: linux.io_uring_cqe = undefined };
-
-// TODO: Use existing codes and make them more semantically meaningful. This is
-// just a bandaid so that callers don't have to check the 'res' field on CQEs
-// after calling functions on AsyncIOUring.
-pub const AsyncIOUringError = error{UnknownError};
+const ResumeNode = struct {
+    frame: anyframe = undefined,
+    result: linux.io_uring_cqe = undefined,
+};
 
 pub const Timeout = struct {
     ts: *const os.linux.kernel_timespec,
@@ -27,7 +25,7 @@ pub const Read = struct {
     buffer: []u8,
     offset: u64,
 
-    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return try ring.read(@ptrToInt(node), op.fd, op.buffer, op.offset);
     }
 
@@ -54,7 +52,7 @@ pub const Write = struct {
     offset: u64,
     const convertError = defaultConvertError;
 
-    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.write(@ptrToInt(node), op.fd, op.buffer, op.offset);
     }
 };
@@ -65,7 +63,7 @@ pub const ReadV = struct {
     offset: u64,
     const convertError = defaultConvertError;
 
-    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.readv(@ptrToInt(node), op.fd, op.iovecs, op.offset);
     }
 };
@@ -76,7 +74,7 @@ pub const ReadFixed = struct {
     offset: u64,
     buffer_index: u16,
     const convertError = defaultConvertError;
-    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.read_fixed(@ptrToInt(node), op.fd, op.buffer, op.offset, op.buffer_index);
     }
 };
@@ -88,7 +86,7 @@ pub const WriteV = struct {
 
     const convertError = defaultConvertError;
 
-    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.writev(@ptrToInt(node), op.fd, op.iovecs, op.offset);
     }
 };
@@ -100,7 +98,7 @@ pub const WriteFixed = struct {
     buffer_index: u16,
     const convertError = defaultConvertError;
 
-    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.write_fixed(@ptrToInt(node), op.fd, op.buffer, op.offset, op.buffer_index);
     }
 };
@@ -131,7 +129,7 @@ pub const Accept = struct {
         };
     }
 
-    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.accept(@ptrToInt(node), op.fd, op.addr, op.addrlen, op.flags);
     }
 };
@@ -166,7 +164,7 @@ pub const Connect = struct {
         };
     }
 
-    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.connect(@ptrToInt(node), op.fd, op.addr, op.addrlen);
     }
 };
@@ -176,7 +174,7 @@ pub const Recv = struct {
     buffer: []u8,
     flags: u32,
 
-    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.recv(@ptrToInt(node), op.fd, op.buffer, op.flags);
     }
 
@@ -195,6 +193,133 @@ pub const Recv = struct {
         };
     }
 };
+
+pub const Fsync = struct {
+    fd: os.fd_t,
+    flags: u32,
+
+    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.fsync(@ptrToInt(node), self.fd, self.flags);
+    }
+
+    const convertError = defaultConvertError;
+};
+
+pub const Fallocate = struct {
+    fd: os.fd_t,
+    mode: i32,
+    offset: u64,
+    len: u64,
+
+    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.fallocate(@ptrToInt(node), self.fd, self.mode, self.offset, self.len);
+    }
+
+    const convertError = defaultConvertError;
+};
+
+pub const Statx = struct {
+    fd: os.fd_t,
+    path: [:0]const u8,
+    flags: u32,
+    mask: u32,
+    buf: *linux.Statx,
+
+    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.statx(@ptrToInt(node), self.fd, self.path, self.flags, self.mask, self.buf);
+    }
+
+    const convertError = defaultConvertError;
+};
+
+pub const Shutdown = struct {
+    sockfd: os.socket_t,
+    how: u32,
+
+    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.shutdown(@ptrToInt(node), self.sockfd, self.how);
+    }
+
+    const convertError = defaultConvertError;
+};
+
+pub const RenameAt = struct {
+    old_dir_fd: os.fd_t,
+    old_path: [*:0]const u8,
+    new_dir_fd: os.fd_t,
+    new_path: [*:0]const u8,
+    flags: u32,
+
+    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.renameat(
+            @ptrToInt(node),
+            self.old_dir_fd,
+            self.old_path,
+            self.new_dir_fd,
+            self.new_path,
+            self.flags,
+        );
+    }
+
+    const convertError = defaultConvertError;
+};
+
+pub const UnlinkAt = struct {
+    dir_fd: os.fd_t,
+    path: [*:0]const u8,
+    flags: u32,
+
+    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.unlinkat(@ptrToInt(node), self.dir_fd, self.path, self.flags);
+    }
+
+    const convertError = defaultConvertError;
+};
+
+pub const MkdirAt = struct {
+    dir_fd: os.fd_t,
+    path: [*:0]const u8,
+    mode: os.mode_t,
+    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.mkdirat(@ptrToInt(node), self.dir_fd, self.path, self.mode);
+    }
+
+    const convertError = defaultConvertError;
+};
+
+pub const SymlinkAt = struct {
+    target: [*:0]const u8,
+    new_dir_fd: os.fd_t,
+    link_path: [*:0]const u8,
+
+    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.symlinkat(@ptrToInt(node), self.target, self.new_dir_fd, self.link_path);
+    }
+
+    const convertError = defaultConvertError;
+};
+
+pub const LinkAt = struct {
+    old_dir_fd: os.fd_t,
+    old_path: [*:0]const u8,
+    new_dir_fd: os.fd_t,
+    new_path: [*:0]const u8,
+    flags: u32,
+
+    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        return ring.linkat(
+            @ptrToInt(node),
+            self.old_dir_fd,
+            self.old_path,
+            self.new_dir_fd,
+            self.new_path,
+            self.flags,
+        );
+    }
+
+    const convertError = defaultConvertError;
+};
+
 pub const Send = struct {
     fd: os.fd_t,
     buffer: []const u8,
@@ -232,7 +357,7 @@ pub const Send = struct {
         };
     }
 
-    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.send(@ptrToInt(node), op.fd, op.buffer, op.flags);
     }
 };
@@ -245,7 +370,7 @@ pub const OpenAt = struct {
 
     const convertError = defaultConvertError;
 
-    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.openat(@ptrToInt(node), op.fd, op.path, op.flags, op.mode);
     }
 };
@@ -254,7 +379,7 @@ pub const Close = struct {
     fd: os.fd_t,
 
     const convertError = defaultConvertError;
-    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.close(@ptrToInt(node), op.fd);
     }
 };
@@ -265,14 +390,14 @@ pub const Cancel = struct {
 
     const convertError = defaultConvertError;
 
-    pub fn run(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.cancel(@ptrToInt(node), op.cancel_user_data, op.flags);
     }
 };
 
 pub const Nop = struct {
     const convertError = defaultConvertError;
-    pub fn run(_: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+    pub fn submit(_: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.nop(@ptrToInt(node));
     }
 };
@@ -285,7 +410,7 @@ pub const EpollCtl = struct {
 
     const convertError = defaultConvertError;
 
-    pub fn run(this: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+    pub fn submit(this: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.epoll_ctl(@ptrToInt(node), this.epfd, this.fd, this.op, this.ev);
     }
 };
@@ -311,6 +436,9 @@ pub const EpollCtl = struct {
 ///      SQE == submission queue entry
 ///      CQE == completion queue entry
 pub const AsyncIOUring = struct {
+    // Users may access this field directly to call functionson the IO_Uring
+    // which do not require use of the submission queue, such as register_files
+    // and the other register_* functions.
     ring: *IO_Uring = undefined,
 
     // Number of events submitted minus number of events completed. We can
@@ -372,9 +500,8 @@ pub const AsyncIOUring = struct {
         }
 
         while (true) {
-            // TODO: Rename 'submit' instead of 'run'.
-            // Run the IO_Uring op.
-            const sqe = try async_op.run(self.ring, &node);
+            // Submit the IO_Uring op to the submission queue.
+            const sqe = try async_op.submit(self.ring, &node);
             // Attach a linked timeout if one is supplied.
             if (op_timeout) |t| {
                 sqe.flags |= linux.IOSQE_IO_LINK;
@@ -434,44 +561,7 @@ pub const AsyncIOUring = struct {
     /// You should preferably use `link_with_next_sqe()` on a write's SQE to link it with an fsync,
     /// or else insert a full write barrier using `drain_previous_sqes()` when queueing an fsync.
     pub fn fsync(self: *AsyncIOUring, fd: os.fd_t, flags: u32) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        // TODO: Allow user to pass a callback to modify the fsync SQE for
-        // advanced cases.
-        while (true) {
-            _ = self.ring.fsync(@ptrToInt(&node), fd, flags) catch |err| {
-                switch (err) {
-                    error.SubmissionQueueFull => {
-                        const num_submitted = try self.ring.submit_and_wait(1);
-                        self.num_outstanding_events += num_submitted;
-                        // Try again - we should have enough space now.
-                        continue;
-                    },
-                    else => {
-                        // Return all other errors to the caller.
-                        return err;
-                    },
-                }
-            };
-
-            suspend {}
-
-            if (node.result.res >= 0) {
-                // Success.
-                return node.result;
-            } else {
-                // Retry on certain errors, return error on others.
-                return switch (@intToEnum(os.E, -node.result.res)) {
-                    .INTR => continue,
-                    // TODO These can actually happen. Convert these to proper
-                    // error codes.
-                    .BADF => unreachable,
-                    .IO => unreachable,
-                    .ROFS, .INVAL => unreachable,
-                    .NOSPC, .DQUOT => unreachable,
-                    else => |err| os.unexpectedErrno(err),
-                };
-            }
-        }
+        return self.do(Fsync{ .fd = fd, .flags = flags }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform a no-op.
@@ -482,12 +572,6 @@ pub const AsyncIOUring = struct {
     pub fn nop(self: *AsyncIOUring) !linux.io_uring_cqe {
         return self.do(Nop{});
     }
-
-    // NEXT UP:
-    // * Consider dumping all ops like this in a union(enum) and get rid of function call shortcuts entirely.
-    // * Convert Client to use new API to see how it looks.
-    // * See if there are any common things besides cancellation/timeouts i didn't handle
-    // * Better error sets?
 
     /// Queues (but does not submit) an SQE to perform a `read(2)`.
     /// Suspends execution until the resulting CQE is available and returns
@@ -643,73 +727,12 @@ pub const AsyncIOUring = struct {
         return self.do(Close{ .fd = fd }, null, null);
     }
 
-    /// Queues (but does not submit) an SQE to register a timeout operation.
-    /// Returns a pointer to the SQE.
-    ///
-    /// The timeout will complete when either the timeout expires, or after the specified number of
-    /// events complete (if `count` is greater than `0`).
-    ///
-    /// `flags` may be `0` for a relative timeout, or `IORING_TIMEOUT_ABS` for an absolute timeout.
-    ///
-    /// The completion event result will be `-ETIME` if the timeout completed through expiration,
-    /// `0` if the timeout completed after the specified number of events, or `-ECANCELED` if the
-    /// timeout was removed before it expired.
-    ///
-    /// io_uring timeouts use the `CLOCK.MONOTONIC` clock source.
-    pub fn timeout(
-        self: *AsyncIOUring,
-        ts: *const os.linux.kernel_timespec,
-        count: u32,
-        flags: u32,
-    ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try self.ring.timeout(@ptrToInt(&node), ts, count, flags);
-        suspend {}
+    // TODO Document how to do timeouts with nop/cancel instead of
+    // timeout/remove?
+    // Or implement timeout/timeout_remove, test if cancel works instead of
+    // timeout_remove
 
-        // TODO But actually, this is totally wrong.
-        if (node.result.res < 0) {
-            return AsyncIOUringError.UnknownError;
-        }
-
-        return node.result;
-    }
-
-    // TODO timeout_remove - which identifies timeout by user_data
-
-    // TODO link_timeout - which should probably be included in all other ops
-    // as an optional timeout parameter
-
-    /// Queues (but does not submit) an SQE to perform a `poll(2)`.
-    /// Returns a pointer to the SQE.
-    pub fn poll_add(
-        self: *AsyncIOUring,
-        fd: os.fd_t,
-        poll_mask: u32,
-    ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        while (true) {
-            _ = try self.ring.poll_add(@ptrToInt(&node), fd, poll_mask);
-            suspend {}
-
-            if (node.result.res >= 0) {
-                return node.result;
-            } else {
-                // More or less copied from
-                // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L748-L756
-                return switch (@intToEnum(os.E, -node.result.res)) {
-                    .BADF => unreachable,
-                    .FAULT => unreachable,
-                    .INVAL => unreachable,
-                    .INTR => continue,
-                    .NOMEM => error.SystemResources,
-                    .CANCELED => error.Cancelled,
-                    else => |err| os.unexpectedErrno(err),
-                };
-            }
-        }
-    }
-
-    // TODO poll_remove, poll_update, which require user_data from poll_add
+    // TODO poll_add, poll_remove, poll_update, which require user_data from poll_add
 
     /// Queues (but does not submit) an SQE to perform an `fallocate(2)`.
     /// Returns a pointer to the SQE.
@@ -720,16 +743,7 @@ pub const AsyncIOUring = struct {
         offset: u64,
         len: u64,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try self.ring.fallocate(@ptrToInt(&node), fd, mode, offset, len);
-        suspend {}
-
-        // TODO
-        if (node.result.res < 0) {
-            return AsyncIOUringError.UnknownError;
-        }
-
-        return node.result;
+        return self.do(Fallocate{ .fd = fd, .mode = mode, .offset = offset, .len = len }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform an `statx(2)`.
@@ -742,19 +756,8 @@ pub const AsyncIOUring = struct {
         mask: u32,
         buf: *linux.Statx,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try self.ring.statx(@ptrToInt(&node), fd, path, flags, mask, buf);
-        suspend {}
-
-        // TODO
-        if (node.result.res < 0) {
-            return AsyncIOUringError.UnknownError;
-        }
-
-        return node.result;
+        return self.do(Statx{ .fd = fd, .path = path, .flags = flags, .mask = mask, .buf = buf }, null, null);
     }
-
-    // TODO cancel, which uses target user_data to cancel ops
 
     /// Queues (but does not submit) an SQE to perform a `shutdown(2)`.
     /// Returns a pointer to the SQE.
@@ -765,16 +768,7 @@ pub const AsyncIOUring = struct {
         sockfd: os.socket_t,
         how: u32,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try self.ring.shutdown(@ptrToInt(&node), sockfd, how);
-        suspend {}
-
-        // TODO
-        if (node.result.res < 0) {
-            return AsyncIOUringError.UnknownError;
-        }
-
-        return node.result;
+        return self.do(Shutdown{ .sockfd = sockfd, .how = how }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform a `renameat2(2)`.
@@ -787,16 +781,13 @@ pub const AsyncIOUring = struct {
         new_path: [*:0]const u8,
         flags: u32,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try self.ring.renameat(@ptrToInt(&node), old_dir_fd, old_path, new_dir_fd, new_path, flags);
-        suspend {}
-
-        // TODO
-        if (node.result.res < 0) {
-            return AsyncIOUringError.UnknownError;
-        }
-
-        return node.result;
+        return self.do(RenameAt{
+            .old_dir_fd = old_dir_fd,
+            .old_path = old_path,
+            .new_dir_fd = new_dir_fd,
+            .new_path = new_path,
+            .flags = flags,
+        }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform a `unlinkat(2)`.
@@ -807,16 +798,7 @@ pub const AsyncIOUring = struct {
         path: [*:0]const u8,
         flags: u32,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try self.ring.unlinkat(@ptrToInt(&node), dir_fd, path, flags);
-        suspend {}
-
-        // TODO
-        if (node.result.res < 0) {
-            return AsyncIOUringError.UnknownError;
-        }
-
-        return node.result;
+        return self.do(UnlinkAt{ .dir_fd = dir_fd, .path = path, .flags = flags }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform a `mkdirat(2)`.
@@ -827,16 +809,7 @@ pub const AsyncIOUring = struct {
         path: [*:0]const u8,
         mode: os.mode_t,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try self.ring.mkdirat(@ptrToInt(&node), dir_fd, path, mode);
-        suspend {}
-
-        // TODO
-        if (node.result.res < 0) {
-            return AsyncIOUringError.UnknownError;
-        }
-
-        return node.result;
+        return self.do(MkdirAt{ .dir_fd = dir_fd, .path = path, .mode = mode }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform a `symlinkat(2)`.
@@ -847,16 +820,7 @@ pub const AsyncIOUring = struct {
         new_dir_fd: os.fd_t,
         link_path: [*:0]const u8,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try self.ring.symlinkat(@ptrToInt(&node), target, new_dir_fd, link_path);
-        suspend {}
-
-        // TODO
-        if (node.result.res < 0) {
-            return AsyncIOUringError.UnknownError;
-        }
-
-        return node.result;
+        return self.do(SymlinkAt{ .target = target, .new_dir_fd = new_dir_fd, .link_path = link_path }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform a `linkat(2)`.
@@ -869,19 +833,14 @@ pub const AsyncIOUring = struct {
         new_path: [*:0]const u8,
         flags: u32,
     ) !linux.io_uring_cqe {
-        var node = ResumeNode{ .frame = @frame(), .result = undefined };
-        _ = try self.ring.linkat(@ptrToInt(&node), old_dir_fd, old_path, new_dir_fd, new_path, flags);
-        suspend {}
-
-        // TODO
-        if (node.result.res < 0) {
-            return AsyncIOUringError.UnknownError;
-        }
-        return node.result;
+        return self.do(LinkAt{
+            .old_dir_fd = old_dir_fd,
+            .old_path = old_path,
+            .new_dir_fd = new_dir_fd,
+            .new_path = new_path,
+            .flags = flags,
+        }, null, null);
     }
-
-    // TODO Re-expose register_* functions, or just have people call into the
-    // underlying ring?
 };
 
 fn testWrite(ring: *AsyncIOUring) !void {
@@ -1042,7 +1001,7 @@ fn testReadWithManualAPI(ring: *AsyncIOUring) !void {
     try std.testing.expectEqual(read_cqe, error.Cancelled);
 }
 
-fn testReadWithManualAPIAndOverridenRun(ring: *AsyncIOUring) !void {
+fn testReadWithManualAPIAndOverridenSubmit(ring: *AsyncIOUring) !void {
     var read_buffer = [_]u8{0} ** 20;
 
     // Make a special op based on read.
@@ -1050,7 +1009,7 @@ fn testReadWithManualAPIAndOverridenRun(ring: *AsyncIOUring) !void {
         read: Read,
         const convertError = Read.convertError;
 
-        pub fn run(self: @This(), my_ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        pub fn submit(self: @This(), my_ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
             std.debug.print("\n THIS IS MY WORLD \n", .{});
             return try my_ring.read(@ptrToInt(node), self.read.fd, self.read.buffer, self.read.offset);
         }
@@ -1099,7 +1058,7 @@ test "read with manual API and overriden run" {
     defer ring.deinit();
     var async_ring = AsyncIOUring{ .ring = &ring };
 
-    var read_frame = async testReadWithManualAPIAndOverridenRun(&async_ring);
+    var read_frame = async testReadWithManualAPIAndOverridenSubmit(&async_ring);
 
     try async_ring.run_event_loop();
 
