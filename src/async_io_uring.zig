@@ -94,7 +94,7 @@ pub const AsyncIOUring = struct {
     /// EINTR.) If you wish to retry on such errors, you must do so manually.
     ///
     /// TODO: Consider doing this automatically or allowing a parameter that
-    /// lets users decide to retryon Cancelled. The problem is that if they set
+    /// lets users decide to retry on Cancelled. The problem is that if they set
     /// a timeout then Cancelled is actually expected. We could also possibly
     /// always retry unless timeout or id are set, since if neither are
     /// provided then we know the user did not expect cancellation to occur.
@@ -152,14 +152,19 @@ pub const AsyncIOUring = struct {
         }
     }
 
-    /// Queues (but does not submit) an SQE to remove an existing operation.
-    /// Returns a pointer to the SQE.
+    /// Submits an SQE to remove an existing operation and suspends until the
+    /// operation has been cancelled (or been found not to exist).
     ///
-    /// The operation is identified by its `user_data`.
+    /// Returns a pointer to the CQE.
+    ///
+    /// The operation is identified by the operation id passed to
+    /// AsyncIOUring.do.
     ///
     /// The completion event result will be `0` if the operation was found and cancelled successfully,
     /// `-EALREADY` if the operation was found but was already in progress, or
     /// `-ENOENT` if the operation was not found.
+    ///
+    /// TODO: Properly handle these error codes.
     pub fn cancel(
         self: *AsyncIOUring,
         cancel_user_data: u64,
@@ -483,7 +488,6 @@ pub const Read = struct {
         return try ring.read(@ptrToInt(node), op.fd, op.buffer, op.offset);
     }
 
-    // TODO: Use something more constrained than anyerror?
     pub fn convertError(linux_err: os.E) anyerror {
         // More or less copied from
         // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L801-L814
