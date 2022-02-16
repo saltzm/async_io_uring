@@ -9,7 +9,7 @@ const linux = os.linux;
 const testing = std.testing;
 const Timer = std.time.Timer;
 
-const aiou = @import("async_io_uring.zig");
+const aiou = @import("async_io_uring");
 const AsyncIOUring = aiou.AsyncIOUring;
 
 const BenchmarkResult = struct { num_ops: u64 };

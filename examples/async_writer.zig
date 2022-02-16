@@ -4,7 +4,7 @@ const IO_Uring = std.os.linux.IO_Uring;
 const os = std.os;
 const testing = std.testing;
 
-const aiou = @import("async_io_uring.zig");
+const aiou = @import("async_io_uring");
 const AsyncIOUring = aiou.AsyncIOUring;
 
 pub const AsyncWriter = struct {

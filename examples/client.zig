@@ -5,7 +5,7 @@ const net = std.net;
 const os = std.os;
 const linux = os.linux;
 
-const io = @import("async_io_uring.zig");
+const io = @import("async_io_uring");
 const AsyncIOUring = io.AsyncIOUring;
 
 // Echo client. Reads a string from stdin, sends it to the server, and prints

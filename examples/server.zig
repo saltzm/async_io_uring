@@ -1,4 +1,5 @@
 const std = @import("std");
+const aiou = @import("async_io_uring");
 const IO_Uring = std.os.linux.IO_Uring;
 const assert = std.debug.assert;
 const mem = std.mem;
@@ -6,7 +7,6 @@ const net = std.net;
 const os = std.os;
 const linux = os.linux;
 
-const aiou = @import("async_io_uring.zig");
 const AsyncIOUring = aiou.AsyncIOUring;
 
 // Currently the number of max connections is hardcoded. This allows you to
