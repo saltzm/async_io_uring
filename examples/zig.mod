@@ -3,5 +3,4 @@ name: examples
 license: MIT
 description: Example usage of async_io_uring
 root_dependencies:
-dependencies: 
   - src: git https://github.com/saltzm/async_io_uring.git
