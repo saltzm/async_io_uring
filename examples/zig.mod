@@ -5,4 +5,3 @@ description: Example usage of async_io_uring
 root_dependencies:
 dependencies: 
   - src: git https://github.com/saltzm/async_io_uring.git
-  - src: git https://github.com/Snektron/vulkan-zig
