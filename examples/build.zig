@@ -1,5 +1,5 @@
 const std = @import("std");
-//const pkgs = @import("gyro").pkgs;
+const deps = @import("./deps.zig");
 
 pub fn build(b: *std.build.Builder) void {
     // Standard target options allows the person running `zig build` to choose
@@ -13,9 +13,10 @@ pub fn build(b: *std.build.Builder) void {
     const mode = b.standardReleaseOptions();
 
     {
-        const server_exe = b.addExecutable("async_io_uring_server", "src/server.zig");
+        const server_exe = b.addExecutable("async_io_uring_server", "server.zig");
         server_exe.setTarget(target);
-        server_exe.setBuildMode(mode); //pkgs.addAllTo(server_exe);
+        server_exe.setBuildMode(mode);
+        deps.addAllTo(server_exe);
         server_exe.install();
 
         const run_cmd = server_exe.run();
@@ -24,15 +25,15 @@ pub fn build(b: *std.build.Builder) void {
             run_cmd.addArgs(args);
         }
 
-        const run_step = b.step("run_server", "Run the app");
+        const run_step = b.step("run_server", "Run an echo server");
         run_step.dependOn(&run_cmd.step);
     }
 
     {
-        const client_exe = b.addExecutable("async_io_uring_client", "src/client.zig");
+        const client_exe = b.addExecutable("async_io_uring_client", "client.zig");
         client_exe.setTarget(target);
         client_exe.setBuildMode(mode);
-        //pkgs.addAllTo(client_exe);
+        deps.addAllTo(client_exe);
         client_exe.install();
 
         const run_cmd = client_exe.run();
@@ -41,15 +42,15 @@ pub fn build(b: *std.build.Builder) void {
             run_cmd.addArgs(args);
         }
 
-        const run_step = b.step("run_client", "Run the app");
+        const run_step = b.step("run_client", "Run an echo client");
         run_step.dependOn(&run_cmd.step);
     }
 
     {
-        const exe = b.addExecutable("async_io_uring_benchmark", "src/benchmark.zig");
+        const exe = b.addExecutable("async_io_uring_benchmark", "benchmark.zig");
         exe.setTarget(target);
         exe.setBuildMode(mode);
-        //pkgs.addAllTo(exe);
+        deps.addAllTo(exe);
         exe.install();
 
         const run_cmd = exe.run();
@@ -58,7 +59,7 @@ pub fn build(b: *std.build.Builder) void {
             run_cmd.addArgs(args);
         }
 
-        const run_step = b.step("run_benchmark", "Run the app");
+        const run_step = b.step("run_benchmark", "Run a benchmark for a running echo server");
         run_step.dependOn(&run_cmd.step);
     }
 }
