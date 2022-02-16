@@ -2,17 +2,21 @@
 # About the examples
 
 Files:
-* `client.zig`: Echo client. All I/O (including reading from stdin) is
+* `src/client.zig`: Echo client. All I/O (including reading from stdin) is
   non-blocking except for the debug logging.
-* `server.zig`: Echo server. Handles multiple concurrent connections. All I/O
+* `src/server.zig`: Echo server. Handles multiple concurrent connections. All I/O
   is non-blocking except for the debug logging.
-* `benchmark.zig`: A silly benchmarking loop to check throughput from the
+* `src/benchmark.zig`: A silly benchmarking loop to check throughput from the
   perspective of a client sending "hello" over and over again.
-* `async_writer.zig`: A demo of making a utility so that you can conveniently
+* `src/async_writer.zig`: A demo of making a utility so that you can conveniently
   print to a file asynchronously.
 
 # Running the echo client and server
 ```sh
+$ cd examples
+# Fetch async_io_uring as a dependency for the examples.
+$ zigmod fetch 
+
 # Run the server
 $ zig build run_server
 

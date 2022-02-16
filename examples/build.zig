@@ -13,7 +13,7 @@ pub fn build(b: *std.build.Builder) void {
     const mode = b.standardReleaseOptions();
 
     {
-        const server_exe = b.addExecutable("async_io_uring_server", "server.zig");
+        const server_exe = b.addExecutable("async_io_uring_server", "src/server.zig");
         server_exe.setTarget(target);
         server_exe.setBuildMode(mode);
         deps.addAllTo(server_exe);
@@ -30,7 +30,7 @@ pub fn build(b: *std.build.Builder) void {
     }
 
     {
-        const client_exe = b.addExecutable("async_io_uring_client", "client.zig");
+        const client_exe = b.addExecutable("async_io_uring_client", "src/client.zig");
         client_exe.setTarget(target);
         client_exe.setBuildMode(mode);
         deps.addAllTo(client_exe);
@@ -47,7 +47,7 @@ pub fn build(b: *std.build.Builder) void {
     }
 
     {
-        const exe = b.addExecutable("async_io_uring_benchmark", "benchmark.zig");
+        const exe = b.addExecutable("async_io_uring_benchmark", "src/benchmark.zig");
         exe.setTarget(target);
         exe.setBuildMode(mode);
         deps.addAllTo(exe);

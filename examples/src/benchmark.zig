@@ -36,22 +36,15 @@ pub fn run_client(ring: *AsyncIOUring) !void {
 
     while (num_ops < max_ops) : (num_ops += 1) {
         // Send it to the server.
-        const send_result = ring.send(client, buffer_to_send[0..num_bytes_to_send], @intCast(u32, num_bytes_to_send)) catch |err| {
-            std.debug.print("Error in run_client: send {} \n", .{err});
-            return err;
-        };
+        const send_result = try ring.send(client, buffer_to_send[0..num_bytes_to_send], @intCast(u32, num_bytes_to_send));
 
         assert(send_result.res == num_bytes_to_send);
 
         // Receive the response.
-        const cqe_recv = ring.recv(client, input_buffer[0..], 0) catch |err| {
-            std.debug.print("Error in run_client: recv {} \n", .{err});
-            return err;
-        };
+        const cqe_recv = try ring.recv(client, input_buffer[0..], 0);
         const num_bytes_received = @intCast(usize, cqe_recv.res);
 
-        // TODO
-        assert(num_bytes_received == num_bytes_to_send - 1);
+        assert(num_bytes_received == num_bytes_to_send);
     }
 }
 
