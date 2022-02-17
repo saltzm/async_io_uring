@@ -100,11 +100,11 @@ pub const AsyncIOUring = struct {
     /// provided then we know the user did not expect cancellation to occur.
     pub fn do(
         self: *AsyncIOUring,
-        async_op: anytype,
-        op_timeout: ?Timeout,
-        op_id: ?*usize,
+        op: anytype,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        const AsyncOp = @TypeOf(async_op);
+        const Op = @TypeOf(op);
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
 
         // Check if the submission queue has enough space for this operation
@@ -112,9 +112,9 @@ pub const AsyncIOUring = struct {
         // and wait for enough space to be available in the queue to submit
         // this operation.
         {
-            // TODO: Allow AsyncOp to define the number of SQEs it requires -
+            // TODO: Allow Op to define the number of SQEs it requires -
             // for cases where e.g. a custom op needs to do write + fsync
-            const num_required_sqes: u32 = if (op_timeout) |_| 2 else 1;
+            const num_required_sqes: u32 = if (timeout) |_| 2 else 1;
 
             if (self.ring.sq.sqes.len - self.ring.sq_ready() < num_required_sqes) {
                 const num_submitted = try self.ring.submit_and_wait(num_required_sqes);
@@ -123,9 +123,9 @@ pub const AsyncIOUring = struct {
         }
 
         // Submit the IO_Uring op to the submission queue.
-        const sqe = try async_op.submit(self.ring, &node);
+        const sqe = try op.submit(self.ring, &node);
         // Attach a linked timeout if one is supplied.
-        if (op_timeout) |t| {
+        if (timeout) |t| {
             sqe.flags |= linux.IOSQE_IO_LINK;
             // No user data - we don't care about the result, since it
             // will show up in the result of sqe as -INTR if the
@@ -135,8 +135,8 @@ pub const AsyncIOUring = struct {
 
         // Set the id for cancellation if one is supplied. Note: This must go
         // prior to suspend.
-        if (op_id) |id| {
-            id.* = @ptrToInt(&node);
+        if (id) |i| {
+            i.* = @ptrToInt(&node);
         }
 
         // Suspend here until resumed by the event loop when the result of
@@ -148,7 +148,7 @@ pub const AsyncIOUring = struct {
         if (node.result.res >= 0) {
             return node.result;
         } else {
-            return AsyncOp.convertError(@intToEnum(os.E, -node.result.res));
+            return Op.convertError(@intToEnum(os.E, -node.result.res));
         }
     }
 
