@@ -31,6 +31,9 @@ const IO_Uring = linux.IO_Uring;
 ///       timeout_remove
 ///     * Implement poll_add, poll_remove, poll_update - the latter two require
 ///       user_data from poll_add
+///     * Convert anyerror in operation structs to be an error set specific to
+///       each operation
+///     * Make cancel handle its expected errors properly
 pub const AsyncIOUring = struct {
     // Users may access this field directly to call functionson the IO_Uring
     // which do not require use of the submission queue, such as register_files
@@ -104,7 +107,6 @@ pub const AsyncIOUring = struct {
         timeout: ?Timeout,
         id: ?*usize,
     ) !linux.io_uring_cqe {
-        const Op = @TypeOf(op);
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
 
         // Check if the submission queue has enough space for this operation
@@ -112,7 +114,7 @@ pub const AsyncIOUring = struct {
         // and wait for enough space to be available in the queue to submit
         // this operation.
         {
-            // TODO: Allow Op to define the number of SQEs it requires -
+            // TODO: Allow op to define the number of SQEs it requires -
             // for cases where e.g. a custom op needs to do write + fsync
             const num_required_sqes: u32 = if (timeout) |_| 2 else 1;
 
@@ -148,6 +150,7 @@ pub const AsyncIOUring = struct {
         if (node.result.res >= 0) {
             return node.result;
         } else {
+            const Op = @TypeOf(op);
             return Op.convertError(@intToEnum(os.E, -node.result.res));
         }
     }
@@ -160,17 +163,19 @@ pub const AsyncIOUring = struct {
     /// The operation is identified by the operation id passed to
     /// AsyncIOUring.do.
     ///
-    /// The completion event result will be `0` if the operation was found and cancelled successfully,
-    /// `-EALREADY` if the operation was found but was already in progress, or
-    /// `-ENOENT` if the operation was not found.
+    /// The completion event result will be `0` if the operation was found and
+    /// cancelled successfully.
     ///
-    /// TODO: Properly handle these error codes.
+    /// If the operation was found but was already in progress, it will return
+    /// error.OperationAlreadyInProgress.
+    ///
+    /// If the operation was not found, it will return error.OperationNotFound.
     pub fn cancel(
         self: *AsyncIOUring,
-        cancel_user_data: u64,
+        operation_id: u64,
         flags: u32,
     ) !linux.io_uring_cqe {
-        return self.do(Cancel{ .cancel_user_data = cancel_user_data, .flags = flags }, null, null);
+        return self.do(Cancel{ .cancel_user_data = operation_id, .flags = flags }, null, null);
     }
 
     /// Queues (but does not submit) an SQE to perform an `fsync(2)`.
@@ -846,7 +851,13 @@ pub const Cancel = struct {
     cancel_user_data: u64,
     flags: u32,
 
-    const convertError = defaultConvertError;
+    pub fn convertError(linux_err: os.E) anyerror {
+        return switch (linux_err) {
+            .ALREADY => error.OperationAlreadyInProgress,
+            .NOENT => error.OperationNotFound,
+            else => |err| return defaultConvertError(err),
+        };
+    }
 
     pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.cancel(@ptrToInt(node), op.cancel_user_data, op.flags);
@@ -1177,4 +1188,32 @@ test "read that is cancelled returns cancelled" {
     try async_ring.run_event_loop();
 
     try nosuspend await read_frame;
+}
+
+fn testCancellingNonExistentOperation(ring: *AsyncIOUring) !void {
+    const op_id: u64 = 32;
+    _ = ring.cancel(op_id, 0) catch |err| {
+        try std.testing.expectEqual(err, error.OperationNotFound);
+        return;
+    };
+    // Cancellation should not succeed so we should never reach this line.
+    unreachable;
+}
+
+test "cancelling an operation that doesn't exist returns error.OperationNotFound" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var ring = IO_Uring.init(2, 0) catch |err| switch (err) {
+        error.SystemOutdated => return error.SkipZigTest,
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer ring.deinit();
+    var async_ring = AsyncIOUring{ .ring = &ring };
+
+    var cancel_frame = async testCancellingNonExistentOperation(&async_ring);
+
+    try async_ring.run_event_loop();
+
+    try nosuspend await cancel_frame;
 }
