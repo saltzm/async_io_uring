@@ -7,6 +7,7 @@ const linux = os.linux;
 
 const io = @import("async_io_uring");
 const AsyncIOUring = io.AsyncIOUring;
+const AsyncWriter = @import("async_writer.zig").AsyncWriter;
 
 // Echo client. Reads a string from stdin, sends it to the server, and prints
 // the response.
@@ -15,13 +16,21 @@ const AsyncIOUring = io.AsyncIOUring;
 // This is the data structure returned by the kernel when an io_uring event is
 // complete.
 pub fn run_client(ring: *AsyncIOUring) !void {
+    var writer = AsyncWriter{ .ring = ring };
+    // TODO: This init pattern is a little weird. Fix it.
+    try writer.init(std.io.getStdErr().handle);
+
     // Address of the echo server.
     const address = try net.Address.parseIp4("127.0.0.1", 3131);
 
     // Open a socket for connecting to the server.
     const server = try os.socket(address.any.family, os.SOCK.STREAM | os.SOCK.CLOEXEC, 0);
     defer {
-        std.debug.print("Closing connection\n", .{});
+        writer.print("Closing connection\n", .{}) catch {
+            std.debug.print("Error logging connection closure\n", .{});
+            std.os.exit(1);
+        };
+
         _ = ring.close(server) catch {
             std.debug.print("Error closing\n", .{});
             std.os.exit(1);
@@ -37,17 +46,22 @@ pub fn run_client(ring: *AsyncIOUring) !void {
 
     while (true) {
         // Read a line from stdin.
-        std.debug.print("Input: ", .{});
+        try writer.print("Input: ", .{});
 
         const read_timeout = os.linux.kernel_timespec{ .tv_sec = 10, .tv_nsec = 0 };
-        const read_cqe = try ring.do(
+        const read_cqe = ring.do(
             io.Read{ .fd = stdin_fd, .buffer = input_buffer[0..], .offset = input_buffer.len },
             io.Timeout{
                 .ts = &read_timeout,
                 .flags = 0,
             },
             null,
-        );
+        ) catch |err| {
+            if (err == error.Cancelled) {
+                try writer.print("\nTimed out waiting for input, exiting...\n", .{});
+                return;
+            } else return err;
+        };
 
         const num_bytes_read = @intCast(usize, read_cqe.res);
 
@@ -58,7 +72,7 @@ pub fn run_client(ring: *AsyncIOUring) !void {
         const recv_cqe = try ring.do(io.Recv{ .fd = server, .buffer = input_buffer[0..], .flags = 0 }, null, null);
 
         const num_bytes_received = @intCast(usize, recv_cqe.res);
-        std.debug.print("Received: {s}\n", .{input_buffer[0..num_bytes_received]});
+        try writer.print("Received: {s}\n", .{input_buffer[0..num_bytes_received]});
     }
 }
 
