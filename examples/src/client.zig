@@ -45,10 +45,11 @@ pub fn run_client(ring: *AsyncIOUring) !void {
     var input_buffer: [256]u8 = undefined;
 
     while (true) {
-        // Read a line from stdin.
+        // Prompt the user for input.
         try writer.print("Input: ", .{});
 
         const read_timeout = os.linux.kernel_timespec{ .tv_sec = 10, .tv_nsec = 0 };
+        // Read a line from stdin with a 10 second timeout.
         const read_cqe = ring.do(
             io.Read{ .fd = stdin_fd, .buffer = input_buffer[0..], .offset = input_buffer.len },
             io.Timeout{
