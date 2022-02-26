@@ -32,8 +32,8 @@ following to your `root_dependencies` in the `zig.mod` file of your project
 and run `zigmod fetch`:
 ```
 root_dependencies:
+  - ...
   - src: git https://github.com/saltzm/async_io_uring.git
-  ...
 ```
 
 You'll then be able to include `async_io_uring.zig` by doing something like:
