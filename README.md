@@ -30,14 +30,14 @@ This library integrates with the [zigmod](https://github.com/nektro/zigmod)
 package manager. If you've installed `zigmod`, you can add a line like the
 following to your `root_dependencies` in the `zig.mod` file of your project 
 and run `zigmod fetch`:
-```
+```yml
 root_dependencies:
   - ...
   - src: git https://github.com/saltzm/async_io_uring.git
 ```
 
 You'll then be able to include `async_io_uring.zig` by doing something like:
-```
+```zig
 const io = @import("async_io_uring");
 ```
 
