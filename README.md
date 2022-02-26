@@ -1,7 +1,7 @@
 
 # About
 
-AsyncIOUring is an event loop that wraps the `IO_Uring` library with coroutines
+`AsyncIOUring` is an event loop that wraps the `IO_Uring` library with coroutines
 support. It is currently relatively complete, but has a few remaining `TODO`s
 in the source. It's not used in production anywhere currently.
 
