@@ -5,6 +5,8 @@ AsyncIOUring is an event loop that wraps the `IO_Uring` library with coroutines
 support. It is currently relatively complete, but has a few remaining `TODO`s
 in the source. It's not used in production anywhere currently.
 
+See the `examples` directory for an echo client and server that use the event loop.
+
 # Goals
 
 * **Minimal**: Wraps the `IO_Uring` library in the most lightweight way
@@ -21,8 +23,6 @@ in the source. It's not used in production anywhere currently.
   timeouts and cancellation support is integrated into the API for all operations.
 * **Performant**: The library does no heap allocation and there's minimal
   additional logic on top of `suspend`/`resume`. 
-
-See the `examples` directory for an echo client and server that use the event loop.
 
 # Example usage
 
