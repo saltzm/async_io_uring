@@ -33,7 +33,6 @@ const IO_Uring = linux.IO_Uring;
 ///       user_data from poll_add
 ///     * Convert anyerror in operation structs to be an error set specific to
 ///       each operation
-///     * Make cancel handle its expected errors properly
 pub const AsyncIOUring = struct {
     // Users may access this field directly to call functionson the IO_Uring
     // which do not require use of the submission queue, such as register_files
@@ -95,7 +94,6 @@ pub const AsyncIOUring = struct {
     /// Note that operations may non-deterministically return the error code
     /// error.Cancelled if cancelled by the kernel. (This corresponds to
     /// EINTR.) If you wish to retry on such errors, you must do so manually.
-    ///
     /// TODO: Consider doing this automatically or allowing a parameter that
     /// lets users decide to retry on Cancelled. The problem is that if they set
     /// a timeout then Cancelled is actually expected. We could also possibly
@@ -150,12 +148,11 @@ pub const AsyncIOUring = struct {
         if (node.result.res >= 0) {
             return node.result;
         } else {
-            const Op = @TypeOf(op);
-            return Op.convertError(@intToEnum(os.E, -node.result.res));
+            return @TypeOf(op).convertError(@intToEnum(os.E, -node.result.res));
         }
     }
 
-    /// Submits an SQE to remove an existing operation and suspends until the
+    /// Queues (but does not submit) an SQE to remove an existing operation and suspends until the
     /// operation has been cancelled (or been found not to exist).
     ///
     /// Returns a pointer to the CQE.
@@ -174,200 +171,256 @@ pub const AsyncIOUring = struct {
         self: *AsyncIOUring,
         operation_id: u64,
         flags: u32,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Cancel{ .cancel_user_data = operation_id, .flags = flags }, null, null);
+        return self.do(Cancel{ .cancel_user_data = operation_id, .flags = flags }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform an `fsync(2)`.
-    /// Returns a pointer to the SQE so that you can further modify the SQE for advanced use cases.
-    /// For example, for `fdatasync()` you can set `IORING_FSYNC_DATASYNC` in the SQE's `rw_flags`.
-    /// N.B. While SQEs are initiated in the order in which they appear in the submission queue,
-    /// operations execute in parallel and completions are unordered. Therefore, an application that
-    /// submits a write followed by an fsync in the submission queue cannot expect the fsync to
-    /// apply to the write, since the fsync may complete before the write is issued to the disk.
-    /// You should preferably use `link_with_next_sqe()` on a write's SQE to link it with an fsync,
-    /// or else insert a full write barrier using `drain_previous_sqes()` when queueing an fsync.
-    pub fn fsync(self: *AsyncIOUring, fd: os.fd_t, flags: u32) !linux.io_uring_cqe {
-        return self.do(Fsync{ .fd = fd, .flags = flags }, null, null);
+    /// Queues (but does not submit) an SQE to perform an `fsync(2)` and
+    /// suspends until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
+    pub fn fsync(
+        self: *AsyncIOUring,
+        fd: os.fd_t,
+        flags: u32,
+        timeout: ?Timeout,
+        id: ?*usize,
+    ) !linux.io_uring_cqe {
+        return self.do(Fsync{ .fd = fd, .flags = flags }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform a no-op.
-    /// Returns a pointer to the SQE so that you can further modify the SQE for advanced use cases.
-    /// A no-op is more useful than may appear at first glance.
-    /// For example, you could call `drain_previous_sqes()` on the returned SQE, to use the no-op to
-    /// know when the ring is idle before acting on a kill signal.
-    pub fn nop(self: *AsyncIOUring) !linux.io_uring_cqe {
-        return self.do(Nop{});
+    /// Queues (but does not submit) an SQE to perform a no-op and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
+    pub fn nop(
+        self: *AsyncIOUring,
+        timeout: ?Timeout,
+        id: ?*usize,
+    ) !linux.io_uring_cqe {
+        return self.do(Nop{}, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform a `read(2)`.
-    /// Suspends execution until the resulting CQE is available and returns
-    /// that CQE.
-    pub fn read(self: *AsyncIOUring, fd: os.fd_t, buffer: []u8, offset: u64) !linux.io_uring_cqe {
-        return self.do(Read{ .fd = fd, .buffer = buffer, .offset = offset }, null, null);
+    /// Queues (but does not submit) an SQE to perform a `read(2)` and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
+    pub fn read(
+        self: *AsyncIOUring,
+        fd: os.fd_t,
+        buffer: []u8,
+        offset: u64,
+        timeout: ?Timeout,
+        id: ?*usize,
+    ) !linux.io_uring_cqe {
+        return self.do(Read{ .fd = fd, .buffer = buffer, .offset = offset }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform a `write(2)`.
-    /// Suspends execution until the resulting CQE is available and returns
-    /// that CQE.
+    /// Queues (but does not submit) an SQE to perform a `write(2)` and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
     pub fn write(
         self: *AsyncIOUring,
         fd: os.fd_t,
         buffer: []const u8,
         offset: u64,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Write{ .fd = fd, .buffer = buffer, .offset = offset }, null, null);
+        return self.do(Write{ .fd = fd, .buffer = buffer, .offset = offset }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform a `preadv()`.
-    /// Returns a pointer to the SQE so that you can further modify the SQE for advanced use cases.
-    /// For example, if you want to do a `preadv2()` then set `rw_flags` on the returned SQE.
-    /// See https://linux.die.net/man/2/preadv.
+    /// Queues (but does not submit) an SQE to perform a `preadv()` and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
     pub fn readv(
         self: *AsyncIOUring,
         fd: os.fd_t,
         iovecs: []const os.iovec,
         offset: u64,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(ReadV{ .fd = fd, .iovecs = iovecs, .offset = offset }, null, null);
+        return self.do(ReadV{ .fd = fd, .iovecs = iovecs, .offset = offset }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform a IORING_OP_READ_FIXED.
-    /// The `buffer` provided must be registered with the kernel by calling `register_buffers` first.
-    /// The `buffer_index` must be the same as its index in the array provided to `register_buffers`.
+    /// Queues (but does not submit) an SQE to perform a IORING_OP_READ_FIXED and suspends
+    /// until the operation has been completed.
     ///
-    /// Returns a pointer to the SQE so that you can further modify the SQE for advanced use cases.
+    /// Returns the CQE for the operation.
     pub fn read_fixed(
         self: *AsyncIOUring,
         fd: os.fd_t,
         buffer: *os.iovec,
         offset: u64,
         buffer_index: u16,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(ReadFixed{ .fd = fd, .buffer = buffer, .offset = offset, .buffer_index = buffer_index }, null, null);
+        return self.do(ReadFixed{ .fd = fd, .buffer = buffer, .offset = offset, .buffer_index = buffer_index }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform a `pwritev()`.
-    /// Returns a pointer to the SQE so that you can further modify the SQE for advanced use cases.
-    /// For example, if you want to do a `pwritev2()` then set `rw_flags` on the returned SQE.
-    /// See https://linux.die.net/man/2/pwritev.
+    /// Queues (but does not submit) an SQE to perform a `pwritev()` and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
     pub fn writev(
         self: *AsyncIOUring,
         fd: os.fd_t,
         iovecs: []const os.iovec_const,
         offset: u64,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(WriteV{ .fd = fd, .iovecs = iovecs, .offset = offset }, null, null);
+        return self.do(WriteV{ .fd = fd, .iovecs = iovecs, .offset = offset }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform a IORING_OP_WRITE_FIXED.
-    /// The `buffer` provided must be registered with the kernel by calling `register_buffers` first.
-    /// The `buffer_index` must be the same as its index in the array provided to `register_buffers`.
+    /// Queues (but does not submit) an SQE to perform a IORING_OP_WRITE_FIXED and suspends
+    /// until the operation has been completed.
     ///
-    /// Returns a pointer to the SQE so that you can further modify the SQE for advanced use cases.
+    /// Returns the CQE for the operation.
     pub fn write_fixed(
         self: *AsyncIOUring,
         fd: os.fd_t,
         buffer: *os.iovec,
         offset: u64,
         buffer_index: u16,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(WriteFixed{ .fd = fd, .buffer = buffer, .offset = offset, .buffer_index = buffer_index }, null, null);
+        return self.do(WriteFixed{ .fd = fd, .buffer = buffer, .offset = offset, .buffer_index = buffer_index }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform an `accept4(2)` on a socket.
-    /// Suspends execution until the resulting CQE is available and returns
-    /// that CQE.
+    /// Queues (but does not submit) an SQE to perform an `accept4(2)` on a socket and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
     pub fn accept(
         self: *AsyncIOUring,
         fd: os.fd_t,
         addr: *os.sockaddr,
         addrlen: *os.socklen_t,
         flags: u32,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Accept{ .fd = fd, .addr = addr, .addrlen = addrlen, .flags = flags }, null, null);
+        return self.do(Accept{ .fd = fd, .addr = addr, .addrlen = addrlen, .flags = flags }, timeout, id);
     }
 
-    /// Queue (but does not submit) an SQE to perform a `connect(2)` on a socket.
-    /// Suspends execution until the resulting CQE is available and returns
-    /// that CQE.
+    /// Queue (but does not submit) an SQE to perform a `connect(2)` on a socket and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
     pub fn connect(
         self: *AsyncIOUring,
         fd: os.fd_t,
         addr: *const os.sockaddr,
         addrlen: os.socklen_t,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Connect{ .fd = fd, .addr = addr, .addrlen = addrlen }, null, null);
+        return self.do(Connect{ .fd = fd, .addr = addr, .addrlen = addrlen }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform a `epoll_ctl(2)`.
-    /// Returns a pointer to the SQE.
+    /// Queues (but does not submit) an SQE to perform a `epoll_ctl(2)` and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
     pub fn epoll_ctl(
         self: *AsyncIOUring,
         epfd: os.fd_t,
         fd: os.fd_t,
         op: u32,
         ev: ?*linux.epoll_event,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(EpollCtl{ .epfd = epfd, .fd = fd, .op = op, .ev = ev }, null, null);
+        return self.do(EpollCtl{ .epfd = epfd, .fd = fd, .op = op, .ev = ev }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform a `recv(2)`.
-    /// Suspends execution until the resulting CQE is available and returns
-    /// that CQE.
+    /// Queues (but does not submit) an SQE to perform a `recv(2)` and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
     pub fn recv(
         self: *AsyncIOUring,
         fd: os.fd_t,
         buffer: []u8,
         flags: u32,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Recv{ .fd = fd, .buffer = buffer, .flags = flags }, null, null);
+        return self.do(Recv{ .fd = fd, .buffer = buffer, .flags = flags }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform a `send(2)`.
-    /// Suspends execution until the resulting CQE is available and returns
-    /// that CQE.
+    /// Queues (but does not submit) an SQE to perform a `send(2)` and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
     pub fn send(
         self: *AsyncIOUring,
         fd: os.fd_t,
         buffer: []const u8,
         flags: u32,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Send{ .fd = fd, .buffer = buffer, .flags = flags }, null, null);
+        return self.do(Send{ .fd = fd, .buffer = buffer, .flags = flags }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform an `openat(2)`.
-    /// Returns a pointer to the SQE.
+    /// Queues (but does not submit) an SQE to perform an `openat(2)` and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
     pub fn openat(
         self: *AsyncIOUring,
         fd: os.fd_t,
         path: [*:0]const u8,
         flags: u32,
         mode: os.mode_t,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(OpenAt{ .fd = fd, .path = path, .flags = flags, .mode = mode }, null, null);
+        return self.do(OpenAt{ .fd = fd, .path = path, .flags = flags, .mode = mode }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform a `close(2)`.
-    /// Returns a pointer to the SQE.
-    pub fn close(self: *AsyncIOUring, fd: os.fd_t) !linux.io_uring_cqe {
-        return self.do(Close{ .fd = fd }, null, null);
+    /// Queues (but does not submit) an SQE to perform a `close(2)` and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
+    pub fn close(
+        self: *AsyncIOUring,
+        fd: os.fd_t,
+        timeout: ?Timeout,
+        id: ?*usize,
+    ) !linux.io_uring_cqe {
+        return self.do(Close{ .fd = fd }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform an `fallocate(2)`.
-    /// Returns a pointer to the SQE.
+    /// Queues (but does not submit) an SQE to perform an `fallocate(2)` and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
     pub fn fallocate(
         self: *AsyncIOUring,
         fd: os.fd_t,
         mode: i32,
         offset: u64,
         len: u64,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Fallocate{ .fd = fd, .mode = mode, .offset = offset, .len = len }, null, null);
+        return self.do(Fallocate{ .fd = fd, .mode = mode, .offset = offset, .len = len }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform an `statx(2)`.
-    /// Returns a pointer to the SQE.
+    /// Queues (but does not submit) an SQE to perform an `statx(2)` and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
     pub fn statx(
         self: *AsyncIOUring,
         fd: os.fd_t,
@@ -375,24 +428,30 @@ pub const AsyncIOUring = struct {
         flags: u32,
         mask: u32,
         buf: *linux.Statx,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Statx{ .fd = fd, .path = path, .flags = flags, .mask = mask, .buf = buf }, null, null);
+        return self.do(Statx{ .fd = fd, .path = path, .flags = flags, .mask = mask, .buf = buf }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform a `shutdown(2)`.
-    /// Returns a pointer to the SQE.
+    /// Queues (but does not submit) an SQE to perform a `shutdown(2)` and suspends
+    /// until the operation has been completed.
     ///
-    /// The operation is identified by its `user_data`.
+    /// Returns the CQE for the operation.
     pub fn shutdown(
         self: *AsyncIOUring,
         sockfd: os.socket_t,
         how: u32,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Shutdown{ .sockfd = sockfd, .how = how }, null, null);
+        return self.do(Shutdown{ .sockfd = sockfd, .how = how }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform a `renameat2(2)`.
-    /// Returns a pointer to the SQE.
+    /// Queues (but does not submit) an SQE to perform a `renameat2(2)` and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
     pub fn renameat(
         self: *AsyncIOUring,
         old_dir_fd: os.fd_t,
@@ -400,6 +459,8 @@ pub const AsyncIOUring = struct {
         new_dir_fd: os.fd_t,
         new_path: [*:0]const u8,
         flags: u32,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
         return self.do(RenameAt{
             .old_dir_fd = old_dir_fd,
@@ -407,44 +468,58 @@ pub const AsyncIOUring = struct {
             .new_dir_fd = new_dir_fd,
             .new_path = new_path,
             .flags = flags,
-        }, null, null);
+        }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform a `unlinkat(2)`.
-    /// Returns a pointer to the SQE.
+    /// Queues (but does not submit) an SQE to perform a `unlinkat(2)` and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
     pub fn unlinkat(
         self: *AsyncIOUring,
         dir_fd: os.fd_t,
         path: [*:0]const u8,
         flags: u32,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(UnlinkAt{ .dir_fd = dir_fd, .path = path, .flags = flags }, null, null);
+        return self.do(UnlinkAt{ .dir_fd = dir_fd, .path = path, .flags = flags }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform a `mkdirat(2)`.
-    /// Returns a pointer to the SQE.
+    /// Queues (but does not submit) an SQE to perform a `mkdirat(2)` and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
     pub fn mkdirat(
         self: *AsyncIOUring,
         dir_fd: os.fd_t,
         path: [*:0]const u8,
         mode: os.mode_t,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(MkdirAt{ .dir_fd = dir_fd, .path = path, .mode = mode }, null, null);
+        return self.do(MkdirAt{ .dir_fd = dir_fd, .path = path, .mode = mode }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform a `symlinkat(2)`.
-    /// Returns a pointer to the SQE.
+    /// Queues (but does not submit) an SQE to perform a `symlinkat(2)` and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
     pub fn symlinkat(
         self: *AsyncIOUring,
         target: [*:0]const u8,
         new_dir_fd: os.fd_t,
         link_path: [*:0]const u8,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(SymlinkAt{ .target = target, .new_dir_fd = new_dir_fd, .link_path = link_path }, null, null);
+        return self.do(SymlinkAt{ .target = target, .new_dir_fd = new_dir_fd, .link_path = link_path }, timeout, id);
     }
 
-    /// Queues (but does not submit) an SQE to perform a `linkat(2)`.
-    /// Returns a pointer to the SQE.
+    /// Queues (but does not submit) an SQE to perform a `linkat(2)` and suspends
+    /// until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
     pub fn linkat(
         self: *AsyncIOUring,
         old_dir_fd: os.fd_t,
@@ -452,6 +527,8 @@ pub const AsyncIOUring = struct {
         new_dir_fd: os.fd_t,
         new_path: [*:0]const u8,
         flags: u32,
+        timeout: ?Timeout,
+        id: ?*usize,
     ) !linux.io_uring_cqe {
         return self.do(LinkAt{
             .old_dir_fd = old_dir_fd,
@@ -459,7 +536,7 @@ pub const AsyncIOUring = struct {
             .new_dir_fd = new_dir_fd,
             .new_path = new_path,
             .flags = flags,
-        }, null, null);
+        }, timeout, id);
     }
 };
 
@@ -470,6 +547,7 @@ const ResumeNode = struct {
     result: linux.io_uring_cqe = undefined,
 };
 
+/// Represents an operation timeout.
 pub const Timeout = struct {
     ts: *const os.linux.kernel_timespec,
     flags: u32,
@@ -484,16 +562,33 @@ fn defaultConvertError(linux_err: os.E) anyerror {
     };
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// The following are structs defined for individual operations that may be    //
+// passed directly to the `AsyncIOUring.do` function. Users may define their  //
+// own structs with the same interface as these to implement custom use cases //
+// that require e.g. modification of the SQE prior to submission. See test    //
+// cases for examples.                                                        //
+////////////////////////////////////////////////////////////////////////////////
+
 pub const Read = struct {
     fd: os.fd_t,
     buffer: []u8,
     offset: u64,
 
+    const Error = error{
+        SocketNotConnected,
+        WouldBlock,
+        SystemResources,
+        ConnectionRefused,
+        ConnectionResetByPeer,
+        Cancelled,
+    } || std.os.UnexpectedError;
+
     pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return try ring.read(@ptrToInt(node), op.fd, op.buffer, op.offset);
     }
 
-    pub fn convertError(linux_err: os.E) anyerror {
+    pub fn convertError(linux_err: os.E) Error {
         // More or less copied from
         // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L801-L814
         return switch (linux_err) {
@@ -892,7 +987,7 @@ fn testWrite(ring: *AsyncIOUring) !void {
     const fd = file.handle;
 
     const write_buffer = [_]u8{9} ** 20;
-    const cqe_write = try ring.write(fd, write_buffer[0..], 0);
+    const cqe_write = try ring.write(fd, write_buffer[0..], 0, null, null);
     try std.testing.expectEqual(cqe_write.res, write_buffer.len);
 
     var read_buffer = [_]u8{0} ** 20;
@@ -989,12 +1084,12 @@ fn testRead(ring: *AsyncIOUring) !void {
     const fd = file.handle;
 
     const write_buffer = [_]u8{9} ** 20;
-    const cqe_write = try ring.write(fd, write_buffer[0..], 0);
+    const cqe_write = try ring.write(fd, write_buffer[0..], 0, null, null);
     try std.testing.expectEqual(cqe_write.res, write_buffer.len);
 
     var read_buffer = [_]u8{0} ** 20;
 
-    const read_cqe = try ring.read(fd, read_buffer[0..], 0);
+    const read_cqe = try ring.read(fd, read_buffer[0..], 0, null, null);
     const num_bytes_read = @intCast(usize, read_cqe.res);
     try std.testing.expectEqualSlices(u8, read_buffer[0..num_bytes_read], write_buffer[0..]);
 }
@@ -1164,7 +1259,7 @@ fn testReadThatIsCancelled(ring: *AsyncIOUring) !void {
     // reliably hang until cancellation.
     var read_frame = async ring.do(Read{ .fd = std.io.getStdIn().handle, .buffer = read_buffer[0..], .offset = 0 }, null, &op_id);
 
-    const cancel_cqe = try ring.cancel(op_id, 0);
+    const cancel_cqe = try ring.cancel(op_id, 0, null, null);
     // Expect that cancellation succeeded.
     try std.testing.expectEqual(cancel_cqe.res, 0);
 
@@ -1192,7 +1287,7 @@ test "read that is cancelled returns cancelled" {
 
 fn testCancellingNonExistentOperation(ring: *AsyncIOUring) !void {
     const op_id: u64 = 32;
-    _ = ring.cancel(op_id, 0) catch |err| {
+    _ = ring.cancel(op_id, 0, null, null) catch |err| {
         try std.testing.expectEqual(err, error.OperationNotFound);
         return;
     };

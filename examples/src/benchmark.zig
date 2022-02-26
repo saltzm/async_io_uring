@@ -24,10 +24,13 @@ pub fn run_client(ring: *AsyncIOUring) !void {
     defer os.close(client);
 
     // Connect to the server.
-    const cqe_connect = ring.connect(client, &address.any, address.getOsSockLen()) catch |err| {
-        std.debug.print("Error in run_client: connect {} \n", .{err});
-        return err;
-    };
+    const cqe_connect = try ring.connect(client, &address.any, address.getOsSockLen(), null, null);
+    defer {
+        _ = ring.close(client, null, null) catch {
+            std.debug.print("Error closing\n", .{});
+            std.os.exit(1);
+        };
+    }
 
     assert(cqe_connect.res == 0);
 
@@ -36,12 +39,12 @@ pub fn run_client(ring: *AsyncIOUring) !void {
 
     while (num_ops < max_ops) : (num_ops += 1) {
         // Send it to the server.
-        const send_result = try ring.send(client, buffer_to_send[0..num_bytes_to_send], @intCast(u32, num_bytes_to_send));
+        const send_result = try ring.send(client, buffer_to_send[0..num_bytes_to_send], @intCast(u32, num_bytes_to_send), null, null);
 
         assert(send_result.res == num_bytes_to_send);
 
         // Receive the response.
-        const cqe_recv = try ring.recv(client, input_buffer[0..], 0);
+        const cqe_recv = try ring.recv(client, input_buffer[0..], 0, null, null);
         const num_bytes_received = @intCast(usize, cqe_recv.res);
 
         assert(num_bytes_received == num_bytes_to_send);
@@ -62,7 +65,7 @@ pub fn benchmark(ring: *AsyncIOUring, result: *BenchmarkResult) !void {
     i = 0;
     while (i < max_clients) : (i += 1) {
         await client_frames[i] catch |err| {
-            std.debug.print("client had err {}", .{err});
+            std.debug.print("client had err {}\n", .{err});
         };
     }
     result.num_ops = max_clients * max_ops;

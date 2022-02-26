@@ -82,7 +82,7 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t, _: u64) !void {
         var accept_addr_len: os.socklen_t = @sizeOf(@TypeOf(accept_addr));
 
         // Wait for a new connection request.
-        var accept_cqe = ring.accept(server, &accept_addr, &accept_addr_len, 0) catch |err| {
+        var accept_cqe = ring.accept(server, &accept_addr, &accept_addr_len, 0, null, null) catch |err| {
             std.debug.print("Error in run_acceptor_loop: accept {} \n", .{err});
             continue;
         };
@@ -114,7 +114,7 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t, _: u64) !void {
             open_conns[idx] = async handle_connection(ring, new_conn_fd, idx, &closed_conns, &num_closed_conns);
         } else {
             // std.debug.print("Reached connection limit, refusing connection. \n", .{});
-            _ = try ring.ring.close(0, new_conn_fd);
+            _ = try ring.close(0, new_conn_fd, null, null);
         }
     }
 
@@ -130,17 +130,13 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t, _: u64) !void {
 pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, closed_conns: *[max_connections]u64, num_closed_conns: *usize) !void {
     defer {
         // std.debug.print("Closing connection with index {}\n", .{conn_idx});
-        // TODO: Expose close on AsyncIOUring.
-        _ = ring.close(client) catch |err| {
+        _ = ring.close(client, null, null) catch |err| {
             std.debug.print("Error closing {}\n", .{err});
             std.os.exit(1);
         };
         // Return this connection index to the list of free connection indices.
         closed_conns[num_closed_conns.*] = conn_idx;
         num_closed_conns.* += 1;
-    }
-    errdefer {
-        std.debug.print("Error in handle_connection\n", .{});
     }
 
     // Used to send and receive.
@@ -149,14 +145,12 @@ pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, cl
     // Loop until the connection is closed, receiving input and sending back
     // that input as output.
     while (true) {
-        const recv_cqe = ring.recv(client, buffer[0..], 0) catch |err| {
+        const recv_cqe = ring.recv(client, buffer[0..], 0, null, null) catch |err| {
             std.debug.print("Error in handle_connection: recv {} \n", .{err});
             return err;
         };
         const num_bytes_received = @intCast(usize, recv_cqe.res);
-        //        const start = std.time.nanoTimestamp();
-        //        while (std.time.nanoTimestamp() - start < 10 * std.time.ns_per_us) {}
-        _ = ring.send(client, buffer[0..num_bytes_received], 0) catch |err| {
+        _ = ring.send(client, buffer[0..num_bytes_received], 0, null, null) catch |err| {
             std.debug.print("Error in handle_connection: send {} \n", .{err});
             return err;
         };

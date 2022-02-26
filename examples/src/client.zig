@@ -31,14 +31,14 @@ pub fn run_client(ring: *AsyncIOUring) !void {
             std.os.exit(1);
         };
 
-        _ = ring.close(server) catch {
+        _ = ring.close(server, null, null) catch {
             std.debug.print("Error closing\n", .{});
             std.os.exit(1);
         };
     }
 
     // Connect to the server.
-    _ = try ring.connect(server, &address.any, address.getOsSockLen());
+    _ = try ring.connect(server, &address.any, address.getOsSockLen(), null, null);
 
     const stdin_file = std.io.getStdIn();
     const stdin_fd = stdin_file.handle;
@@ -67,7 +67,7 @@ pub fn run_client(ring: *AsyncIOUring) !void {
         const num_bytes_read = @intCast(usize, read_cqe.res);
 
         // Send it to the server.
-        _ = try ring.send(server, input_buffer[0..num_bytes_read], 0);
+        _ = try ring.send(server, input_buffer[0..num_bytes_read], 0, null, null);
 
         // Receive response.
         const recv_cqe = try ring.do(io.Recv{ .fd = server, .buffer = input_buffer[0..], .flags = 0 }, null, null);
