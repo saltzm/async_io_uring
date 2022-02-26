@@ -26,7 +26,7 @@ See the `examples` directory for an echo client and server that use the event lo
 
 # How to use 
 
-This library integrates with the (zigmod)[https://github.com/nektro/zigmod]
+This library integrates with the [zigmod](https://github.com/nektro/zigmod)
 package manager. If you've installed `zigmod`, you can add a line like the
 following to your `root_dependencies` in the `zig.mod` file of your project 
 and run `zigmod fetch`:
