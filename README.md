@@ -24,6 +24,27 @@ See the `examples` directory for an echo client and server that use the event lo
 * **Performant**: The library does no heap allocation and there's minimal
   additional logic on top of `suspend`/`resume`. 
 
+# How to use 
+
+This library integrates with the (zigmod)[https://github.com/nektro/zigmod]
+package manager. If you've installed `zigmod`, you can add a line like the
+following to your `root_dependencies` in the `zig.mod` file of your project 
+and run `zigmod fetch`:
+```
+root_dependencies:
+  - src: git https://github.com/saltzm/async_io_uring.git
+  ...
+```
+
+You'll then be able to include `async_io_uring.zig` by doing something like:
+```
+const io = @import("async_io_uring");
+```
+
+The examples directory is structured roughly as you might structure a project
+that uses `async_io_uring`, with a working `zig.mod` file and `build.zig` that
+can serve as examples.
+
 # Example usage
 
 The following is a snippet of code from the echo client in the examples
