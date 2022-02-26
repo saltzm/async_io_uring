@@ -52,10 +52,7 @@ pub fn run_client(ring: *AsyncIOUring) !void {
         // Read a line from stdin with a 10 second timeout.
         const read_cqe = ring.do(
             io.Read{ .fd = stdin_fd, .buffer = input_buffer[0..], .offset = input_buffer.len },
-            io.Timeout{
-                .ts = &read_timeout,
-                .flags = 0,
-            },
+            io.Timeout{ .ts = &read_timeout, .flags = 0 },
             null,
         ) catch |err| {
             if (err == error.Cancelled) {

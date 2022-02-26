@@ -21,6 +21,12 @@ const IO_Uring = linux.IO_Uring;
 /// available.
 ///
 /// Parts of the function-level comments were copied from the IO_Uring library.
+/// More details on each function can be found in the comments of the IO_Uring
+/// library functions that this wraps, since this is just a thin wrapper for
+/// those. If any of those functions require modification of the SQE before
+/// submitting an operation, users of AsyncIOUring must make their own
+/// operation struct with a custom run function. See 
+/// testReadWithManualAPIAndOverridenSubmit for an example.
 ///
 /// Note on abbreviations:
 ///      SQE == submission queue entry
@@ -47,7 +53,7 @@ pub const AsyncIOUring = struct {
     /// for completion events. When a completion queue event (cqe) is available, it
     /// will resume the coroutine that submitted the request corresponding to that cqe.
     pub fn run_event_loop(self: *AsyncIOUring) !void {
-        // TODO Make this a comptime parameter
+        // TODO: Make this a comptime parameter?
         var cqes: [4096]linux.io_uring_cqe = undefined;
         // We want our program to resume as soon as any event we've submitted
         // is ready, so we set this to 1.
@@ -1100,7 +1106,11 @@ fn testReadThatTimesOut(ring: *AsyncIOUring) !void {
     const ts = os.linux.kernel_timespec{ .tv_sec = 0, .tv_nsec = 10000 };
     // Try to read from stdin - there won't be any input so this should
     // reliably time out.
-    const read_cqe = ring.do(Read{ .fd = std.io.getStdIn().handle, .buffer = read_buffer[0..], .offset = 0 }, Timeout{ .ts = &ts, .flags = 0 }, null);
+    const read_cqe = ring.do(
+        Read{ .fd = std.io.getStdIn().handle, .buffer = read_buffer[0..], .offset = 0 },
+        Timeout{ .ts = &ts, .flags = 0 },
+        null,
+    );
     try std.testing.expectEqual(read_cqe, error.Cancelled);
 }
 
