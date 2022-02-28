@@ -7,6 +7,30 @@ in the source. It's not used in production anywhere currently.
 
 See the `examples` directory for an echo client and server that use the event loop.
 
+# Background
+
+As an overview for the unfamiliar, `io_uring` is a new-ish Linux kernel feature 
+that allows users to enqueue requests to perform syscalls into a submission
+queue (e.g. a request to read from a socket) and then submit the submission
+queue to the kernel for processing.
+
+When requests from the submission queue have been satisfied, the result is
+placed onto completion queue by the kernel. The user is able to either poll
+the kernel for completion queue results or block until results are
+available.
+
+Zig's `IO_Uring` library provides a convenient interface to the kernel's
+`io_uring` functionality. The user of `IO_Uring`, however, still has to manually
+deal with submitting requests to the kernel and retrieving events from the
+completion queue, which can be tedious.
+
+This library wraps the `IO_Uring` library by adding an event loop that handles
+request submission and completion, and provides an interface for each syscall
+that uses zig's `async` functionality to suspend execution of the calling code
+until the syscall has been completed. This lets the user write code that looks
+like blocking code, while still allowing for concurrency even within a single
+thread.
+
 # Goals
 
 * **Minimal**: Wraps the `IO_Uring` library in the most lightweight way
@@ -22,7 +46,7 @@ See the `examples` directory for an echo client and server that use the event lo
   library looks almost identical to blocking code. In addition, operation
   timeouts and cancellation support is integrated into the API for all operations.
 * **Performant**: The library does no heap allocation and there's minimal
-  additional logic on top of `suspend`/`resume`. 
+  additional logic on top of `suspend`/`resume`.
 
 # How to use 
 
