@@ -118,12 +118,13 @@ pub const AsyncIOUring = struct {
         // and wait for enough space to be available in the queue to submit
         // this operation.
         {
-            // TODO: Allow op to define the number of SQEs it requires -
-            // for cases where e.g. a custom op needs to do write + fsync
-            const num_required_sqes: u32 = if (timeout) |_| 2 else 1;
+            const num_required_sqes_for_op = op.getNumRequiredSubmissionQueueEntries();
+            const num_required_sqes = if (timeout) |_| num_required_sqes_for_op + 1 else num_required_sqes_for_op;
 
-            if (self.ring.sq.sqes.len - self.ring.sq_ready() < num_required_sqes) {
-                const num_submitted = try self.ring.submit_and_wait(num_required_sqes);
+            const num_free_entries_in_sq = @intCast(u32, self.ring.sq.sqes.len - self.ring.sq_ready());
+            if (num_free_entries_in_sq < num_required_sqes) {
+                const num_submitted = try self.ring.submit_and_wait(num_required_sqes -
+                    num_free_entries_in_sq);
                 self.num_outstanding_events += num_submitted;
             }
         }
@@ -590,6 +591,10 @@ pub const Read = struct {
         Cancelled,
     } || std.os.UnexpectedError;
 
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
     pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return try ring.read(@ptrToInt(node), op.fd, op.buffer, op.offset);
     }
@@ -616,6 +621,10 @@ pub const Write = struct {
     offset: u64,
     const convertError = defaultConvertError;
 
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
     pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.write(@ptrToInt(node), op.fd, op.buffer, op.offset);
     }
@@ -626,6 +635,10 @@ pub const ReadV = struct {
     iovecs: []const os.iovec,
     offset: u64,
     const convertError = defaultConvertError;
+
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
 
     pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.readv(@ptrToInt(node), op.fd, op.iovecs, op.offset);
@@ -638,6 +651,11 @@ pub const ReadFixed = struct {
     offset: u64,
     buffer_index: u16,
     const convertError = defaultConvertError;
+
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
     pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.read_fixed(@ptrToInt(node), op.fd, op.buffer, op.offset, op.buffer_index);
     }
@@ -650,6 +668,10 @@ pub const WriteV = struct {
 
     const convertError = defaultConvertError;
 
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
     pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.writev(@ptrToInt(node), op.fd, op.iovecs, op.offset);
     }
@@ -661,6 +683,10 @@ pub const WriteFixed = struct {
     offset: u64,
     buffer_index: u16,
     const convertError = defaultConvertError;
+
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
 
     pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.write_fixed(@ptrToInt(node), op.fd, op.buffer, op.offset, op.buffer_index);
@@ -691,6 +717,10 @@ pub const Accept = struct {
             .CANCELED => error.Cancelled,
             else => |err| return os.unexpectedErrno(err),
         };
+    }
+
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
     }
 
     pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
@@ -728,6 +758,10 @@ pub const Connect = struct {
         };
     }
 
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
     pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.connect(@ptrToInt(node), op.fd, op.addr, op.addrlen);
     }
@@ -737,6 +771,10 @@ pub const Recv = struct {
     fd: os.fd_t,
     buffer: []u8,
     flags: u32,
+
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
 
     pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.recv(@ptrToInt(node), op.fd, op.buffer, op.flags);
@@ -762,6 +800,10 @@ pub const Fsync = struct {
     fd: os.fd_t,
     flags: u32,
 
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
     pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.fsync(@ptrToInt(node), self.fd, self.flags);
     }
@@ -774,6 +816,10 @@ pub const Fallocate = struct {
     mode: i32,
     offset: u64,
     len: u64,
+
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
 
     pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.fallocate(@ptrToInt(node), self.fd, self.mode, self.offset, self.len);
@@ -789,6 +835,10 @@ pub const Statx = struct {
     mask: u32,
     buf: *linux.Statx,
 
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
     pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.statx(@ptrToInt(node), self.fd, self.path, self.flags, self.mask, self.buf);
     }
@@ -799,6 +849,10 @@ pub const Statx = struct {
 pub const Shutdown = struct {
     sockfd: os.socket_t,
     how: u32,
+
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
 
     pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.shutdown(@ptrToInt(node), self.sockfd, self.how);
@@ -813,6 +867,10 @@ pub const RenameAt = struct {
     new_dir_fd: os.fd_t,
     new_path: [*:0]const u8,
     flags: u32,
+
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
 
     pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.renameat(
@@ -833,6 +891,10 @@ pub const UnlinkAt = struct {
     path: [*:0]const u8,
     flags: u32,
 
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
     pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.unlinkat(@ptrToInt(node), self.dir_fd, self.path, self.flags);
     }
@@ -844,6 +906,10 @@ pub const MkdirAt = struct {
     dir_fd: os.fd_t,
     path: [*:0]const u8,
     mode: os.mode_t,
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
     pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.mkdirat(@ptrToInt(node), self.dir_fd, self.path, self.mode);
     }
@@ -855,6 +921,10 @@ pub const SymlinkAt = struct {
     target: [*:0]const u8,
     new_dir_fd: os.fd_t,
     link_path: [*:0]const u8,
+
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
 
     pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.symlinkat(@ptrToInt(node), self.target, self.new_dir_fd, self.link_path);
@@ -869,6 +939,10 @@ pub const LinkAt = struct {
     new_dir_fd: os.fd_t,
     new_path: [*:0]const u8,
     flags: u32,
+
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
 
     pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.linkat(
@@ -921,6 +995,10 @@ pub const Send = struct {
         };
     }
 
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
     pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.send(@ptrToInt(node), op.fd, op.buffer, op.flags);
     }
@@ -934,6 +1012,10 @@ pub const OpenAt = struct {
 
     const convertError = defaultConvertError;
 
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
     pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.openat(@ptrToInt(node), op.fd, op.path, op.flags, op.mode);
     }
@@ -943,6 +1025,10 @@ pub const Close = struct {
     fd: os.fd_t,
 
     const convertError = defaultConvertError;
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
     pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.close(@ptrToInt(node), op.fd);
     }
@@ -960,6 +1046,10 @@ pub const Cancel = struct {
         };
     }
 
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
     pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.cancel(@ptrToInt(node), op.cancel_user_data, op.flags);
     }
@@ -967,6 +1057,10 @@ pub const Cancel = struct {
 
 pub const Nop = struct {
     const convertError = defaultConvertError;
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
     pub fn submit(_: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.nop(@ptrToInt(node));
     }
@@ -979,6 +1073,10 @@ pub const EpollCtl = struct {
     ev: ?*linux.epoll_event,
 
     const convertError = defaultConvertError;
+
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
 
     pub fn submit(this: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.epoll_ctl(@ptrToInt(node), this.epfd, this.fd, this.op, this.ev);
@@ -1159,6 +1257,10 @@ fn testReadWithManualAPIAndOverridenSubmit(ring: *AsyncIOUring) !void {
 
         const convertError = Read.convertError;
 
+        pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+            return 1;
+        }
+
         pub fn submit(self: @This(), my_ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
             self.value_to_set.* = true;
             return try my_ring.read(@ptrToInt(node), self.read.fd, self.read.buffer, self.read.offset);
@@ -1179,6 +1281,62 @@ fn testReadWithManualAPIAndOverridenSubmit(ring: *AsyncIOUring) !void {
 
     try std.testing.expectEqual(read_cqe, error.Cancelled);
     try std.testing.expectEqual(ran_custom_submit, true);
+}
+
+fn testOverridingNumberOfSQEs(ring: *AsyncIOUring) !void {
+    var ran_custom_submit: bool = false;
+
+    // Make a special op based on read.
+    const double_nop: struct {
+        value_to_set: *bool,
+
+        const convertError = Read.convertError;
+
+        pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+            return 2;
+        }
+
+        pub fn submit(self: @This(), my_ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+            self.value_to_set.* = true;
+            // TODO: Using this in practice will probably be a bit tricky since
+            // the timeout only applies to whatever this function returns, not
+            // to the first op. This interface maybe seems more generic than it
+            // actually is, which sould be a problem
+            _ = try my_ring.nop(0);
+            return try my_ring.nop(@ptrToInt(node));
+        }
+    } = .{
+        .value_to_set = &ran_custom_submit,
+    };
+
+    const nop_cqe = try ring.do(double_nop, null, null);
+
+    try std.testing.expectEqual(nop_cqe.res, 0);
+    try std.testing.expectEqual(ran_custom_submit, true);
+}
+
+test "overriding number of sqes in custom op submits pending entries when queue would be full" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var ring = IO_Uring.init(2, 0) catch |err| switch (err) {
+        error.SystemOutdated => return error.SkipZigTest,
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer ring.deinit();
+    var async_ring = AsyncIOUring{ .ring = &ring };
+
+    // After this there will only be 1 slot left in the submission queue - if
+    // getNumRequiredSubmissionQueueEntries is not implemented/used correctly,
+    // this will cause a SubmissionQueueFull error when we try to submit our
+    // custom op.
+    _ = try ring.nop(0);
+
+    var read_frame = async testOverridingNumberOfSQEs(&async_ring);
+
+    try async_ring.run_event_loop();
+
+    try nosuspend await read_frame;
 }
 
 test "read with manual API" {
