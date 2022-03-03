@@ -34,11 +34,9 @@ const IO_Uring = linux.IO_Uring;
 ///
 /// TODO: 
 ///     * Implement or demonstrate how to mimic the behavior of timeout and
-///       timeout_remove
+///       timeout_remove (1 hr)
 ///     * Implement poll_add, poll_remove, poll_update - the latter two require
-///       user_data from poll_add
-///     * Convert anyerror in operation structs to be an error set specific to
-///       each operation
+///       user_data from poll_add (30 min - 1 hr)
 pub const AsyncIOUring = struct {
     // Users may access this field directly to call functionson the IO_Uring
     // which do not require use of the submission queue, such as register_files
@@ -560,9 +558,10 @@ pub const Timeout = struct {
     flags: u32,
 };
 
-// TODO: Convert all usages of this to properly handle errors according to the
-// use case.
-fn defaultConvertError(linux_err: os.E) anyerror {
+const DefaultError = error{Cancelled} || std.os.UnexpectedError;
+
+// Fallback error-handling for interruption/cancellation errors.
+fn defaultConvertError(linux_err: os.E) DefaultError {
     return switch (linux_err) {
         .INTR, .CANCELED => error.Cancelled,
         else => |err| os.unexpectedErrno(err),
@@ -582,14 +581,7 @@ pub const Read = struct {
     buffer: []u8,
     offset: u64,
 
-    const Error = error{
-        SocketNotConnected,
-        WouldBlock,
-        SystemResources,
-        ConnectionRefused,
-        ConnectionResetByPeer,
-        Cancelled,
-    } || std.os.UnexpectedError;
+    const Error = std.os.ReadError || DefaultError;
 
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
@@ -599,18 +591,22 @@ pub const Read = struct {
         return try ring.read(@ptrToInt(node), op.fd, op.buffer, op.offset);
     }
 
+    /// See read man pages for specific meaning of possible errors: 
+    /// http://manpages.ubuntu.com/manpages/impish/man2/read.2.html#errors
     pub fn convertError(linux_err: os.E) Error {
-        // More or less copied from
-        // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L801-L814
         return switch (linux_err) {
-            .NOTCONN => error.SocketNotConnected,
-            .AGAIN => error.WouldBlock,
-            .NOMEM => error.SystemResources,
-            .CONNREFUSED => error.ConnectionRefused,
-            .CONNRESET => error.ConnectionResetByPeer,
-            .INTR, .CANCELED => error.Cancelled,
-            .BADF, .FAULT, .INVAL, .NOTSOCK => unreachable,
-            else => |err| os.unexpectedErrno(err),
+            // Copied from std.os.read.
+            .INVAL => unreachable,
+            .FAULT => unreachable,
+            .AGAIN => return error.WouldBlock,
+            .BADF => return error.NotOpenForReading, // Can be a race condition.
+            .IO => return error.InputOutput,
+            .ISDIR => return error.IsDir,
+            .NOBUFS => return error.SystemResources,
+            .NOMEM => return error.SystemResources,
+            .CONNRESET => return error.ConnectionResetByPeer,
+            .TIMEDOUT => return error.ConnectionTimedOut,
+            else => |err| defaultConvertError(err),
         };
     }
 };
@@ -619,7 +615,26 @@ pub const Write = struct {
     fd: os.fd_t,
     buffer: []const u8,
     offset: u64,
-    const convertError = defaultConvertError;
+
+    const Error = std.os.WriteError || DefaultError;
+
+    pub fn convertError(linux_err: os.E) Error {
+        return switch (linux_err) {
+            // Copied from std.os.write.
+            .INVAL => unreachable,
+            .FAULT => unreachable,
+            .AGAIN => unreachable,
+            .BADF => error.NotOpenForWriting, // can be a race condition.
+            .DESTADDRREQ => unreachable, // `connect` was never called.
+            .DQUOT => error.DiskQuota,
+            .FBIG => error.FileTooBig,
+            .IO => error.InputOutput,
+            .NOSPC => error.NoSpaceLeft,
+            .PERM => error.AccessDenied,
+            .PIPE => error.BrokenPipe,
+            else => |err| defaultConvertError(err),
+        };
+    }
 
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
@@ -634,7 +649,26 @@ pub const ReadV = struct {
     fd: os.fd_t,
     iovecs: []const os.iovec,
     offset: u64,
-    const convertError = defaultConvertError;
+
+    const Error = std.os.PReadError || DefaultError;
+
+    pub fn convertError(linux_err: os.E) Error {
+        // Copied from std.os.preadv.
+        return switch (linux_err) {
+            .INVAL => unreachable,
+            .FAULT => unreachable,
+            .AGAIN => error.WouldBlock,
+            .BADF => error.NotOpenForReading, // can be a race condition
+            .IO => error.InputOutput,
+            .ISDIR => error.IsDir,
+            .NOBUFS => error.SystemResources,
+            .NOMEM => error.SystemResources,
+            .NXIO => error.Unseekable,
+            .SPIPE => error.Unseekable,
+            .OVERFLOW => error.Unseekable,
+            else => |err| defaultConvertError(err),
+        };
+    }
 
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
@@ -650,7 +684,9 @@ pub const ReadFixed = struct {
     buffer: *os.iovec,
     offset: u64,
     buffer_index: u16,
-    const convertError = defaultConvertError;
+
+    // TODO: Double-check this.
+    const convertError = Read.convertError;
 
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
@@ -666,7 +702,26 @@ pub const WriteV = struct {
     iovecs: []const os.iovec_const,
     offset: u64,
 
-    const convertError = defaultConvertError;
+    const Error = std.os.PWriteError || DefaultError;
+
+    pub fn convertError(linux_err: os.E) Error {
+        // Copied from std.os.pwritev.
+        return switch (linux_err) {
+            .INVAL => unreachable,
+            .FAULT => unreachable,
+            .AGAIN => error.WouldBlock,
+            .BADF => error.NotOpenForWriting, // Can be a race condition.
+            .DESTADDRREQ => unreachable, // `connect` was never called.
+            .DQUOT => error.DiskQuota,
+            .FBIG => error.FileTooBig,
+            .IO => error.InputOutput,
+            .NOSPC => error.NoSpaceLeft,
+            .PERM => error.AccessDenied,
+            .PIPE => error.BrokenPipe,
+            .CONNRESET => error.ConnectionResetByPeer,
+            else => |err| defaultConvertError(err),
+        };
+    }
 
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
@@ -682,7 +737,9 @@ pub const WriteFixed = struct {
     buffer: *os.iovec,
     offset: u64,
     buffer_index: u16,
-    const convertError = defaultConvertError;
+
+    // TODO: Double-check this.
+    const convertError = Write.convertError;
 
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
@@ -699,10 +756,13 @@ pub const Accept = struct {
     addrlen: *os.socklen_t,
     flags: u32,
 
-    pub fn convertError(linux_err: os.E) anyerror {
+    const Error = std.os.AcceptError || DefaultError;
+
+    pub fn convertError(linux_err: os.E) Error {
+        // Copied from std.os.accept.
         return switch (linux_err) {
             .AGAIN => error.WouldBlock,
-            .BADF => unreachable,
+            .BADF => unreachable, // always a race condition
             .CONNABORTED => error.ConnectionAborted,
             .FAULT => unreachable,
             .INVAL => error.SocketNotListening,
@@ -714,8 +774,7 @@ pub const Accept = struct {
             .OPNOTSUPP => unreachable,
             .PROTO => error.ProtocolFailure,
             .PERM => error.BlockedByFirewall,
-            .CANCELED => error.Cancelled,
-            else => |err| return os.unexpectedErrno(err),
+            else => |err| defaultConvertError(err),
         };
     }
 
@@ -732,9 +791,11 @@ pub const Connect = struct {
     fd: os.fd_t,
     addr: *const os.sockaddr,
     addrlen: os.socklen_t,
-    pub fn convertError(linux_err: os.E) anyerror {
-        // More or less copied from
-        // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L682-L704.
+
+    const Error = std.os.ConnectError || DefaultError;
+
+    pub fn convertError(linux_err: os.E) Error {
+        // Copied from std.os.connect.
         return switch (linux_err) {
             .ACCES => error.PermissionDenied,
             .PERM => error.PermissionDenied,
@@ -743,18 +804,17 @@ pub const Connect = struct {
             .AFNOSUPPORT => error.AddressFamilyNotSupported,
             .AGAIN, .INPROGRESS => error.WouldBlock,
             .ALREADY => error.ConnectionPending,
-            .BADF => unreachable,
+            .BADF => unreachable, // sockfd is not a valid open file descriptor.
             .CONNREFUSED => error.ConnectionRefused,
             .CONNRESET => error.ConnectionResetByPeer,
-            .FAULT => unreachable,
-            .ISCONN => unreachable,
+            .FAULT => unreachable, // The socket structure address is outside the user's address space.
+            .ISCONN => unreachable, // The socket is already connected.
             .NETUNREACH => error.NetworkUnreachable,
-            .NOTSOCK => unreachable,
-            .PROTOTYPE => unreachable,
+            .NOTSOCK => unreachable, // The file descriptor sockfd does not refer to a socket.
+            .PROTOTYPE => unreachable, // The socket type does not support the requested communications protocol.
             .TIMEDOUT => error.ConnectionTimedOut,
-            .NOENT => error.FileNotFound,
-            .CANCELED => error.Cancelled,
-            else => |err| os.unexpectedErrno(err),
+            .NOENT => error.FileNotFound, // Returned when socket is AF.UNIX and the given path does not exist.
+            else => |err| defaultConvertError(err),
         };
     }
 
@@ -772,6 +832,8 @@ pub const Recv = struct {
     buffer: []u8,
     flags: u32,
 
+    const Error = std.os.RecvFromError || DefaultError;
+
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
     }
@@ -780,18 +842,19 @@ pub const Recv = struct {
         return ring.recv(@ptrToInt(node), op.fd, op.buffer, op.flags);
     }
 
-    pub fn convertError(linux_err: os.E) anyerror {
-        // More or less copied from
-        // https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L546-L559.
+    pub fn convertError(linux_err: os.E) Error {
+        // Copied from std.os.recvfrom.
         return switch (linux_err) {
-            .NOTCONN => error.SocketNotConnected,
+            .BADF => unreachable, // always a race condition
+            .FAULT => unreachable,
+            .INVAL => unreachable,
+            .NOTCONN => unreachable,
+            .NOTSOCK => unreachable,
             .AGAIN => error.WouldBlock,
             .NOMEM => error.SystemResources,
             .CONNREFUSED => error.ConnectionRefused,
             .CONNRESET => error.ConnectionResetByPeer,
-            .CANCELED => error.Cancelled,
-            .BADF, .FAULT, .INVAL, .NOTSOCK => unreachable,
-            else => |err| os.unexpectedErrno(err),
+            else => |err| defaultConvertError(err),
         };
     }
 };
@@ -800,6 +863,19 @@ pub const Fsync = struct {
     fd: os.fd_t,
     flags: u32,
 
+    const Error = std.os.SyncError || DefaultError;
+
+    pub fn convertError(linux_err: os.E) Error {
+        // Copied from std.os.fsync.
+        return switch (linux_err) {
+            .BADF, .INVAL, .ROFS => unreachable,
+            .IO => error.InputOutput,
+            .NOSPC => error.NoSpaceLeft,
+            .DQUOT => error.DiskQuota,
+            else => |err| defaultConvertError(err),
+        };
+    }
+
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
     }
@@ -807,8 +883,6 @@ pub const Fsync = struct {
     pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.fsync(@ptrToInt(node), self.fd, self.flags);
     }
-
-    const convertError = defaultConvertError;
 };
 
 pub const Fallocate = struct {
@@ -825,7 +899,14 @@ pub const Fallocate = struct {
         return ring.fallocate(@ptrToInt(node), self.fd, self.mode, self.offset, self.len);
     }
 
-    const convertError = defaultConvertError;
+    const Error = DefaultError;
+
+    // TODO: fallocate can only return '1' as an error code according to the
+    // manpages. Right now this will lead to "UnexpectedError" which is not
+    // really correct.
+    pub fn convertError(linux_err: os.E) Error {
+        return defaultConvertError(linux_err);
+    }
 };
 
 pub const Statx = struct {
@@ -835,6 +916,48 @@ pub const Statx = struct {
     mask: u32,
     buf: *linux.Statx,
 
+    // Comments for these errors were copied from Ubuntu manpages on Ubuntu 20.04, Linux
+    // kernel version 5.13.0-25-generic.
+    const Error = error{
+        /// Search permission is denied for one of the directories in the path
+        /// prefix of path.
+        AccessDenied,
+        /// Too many symbolic links encountered while traversing the path.
+        SymLinkLoop,
+        /// path is too long.
+        NameTooLong,
+        /// A component of path does not exist, or path is an empty string and
+        /// AT_EMPTY_PATH was not specified in flags.
+        FileNotFound,
+        /// Out of memory (i.e., kernel memory).
+        SystemResources,
+        /// A component of the path prefix of path is not a directory or path
+        /// is relative and fd is a file descriptor referring to a file other
+        /// than a directory.
+        NotDir,
+    } || DefaultError;
+
+    pub fn convertError(linux_err: os.E) Error {
+        // Copied from std.os.preadv.
+        return switch (linux_err) {
+            .ACCESS => error.AccessDenied,
+            // fd is not a valid open file descriptor.
+            .BADF => unreachable,
+            // path or buf is NULL or points to a location outside the
+            // process's accessible address space.
+            .FAULT => unreachable,
+            // Invalid flag specified in flags or reserved flag specified
+            // in mask.
+            .INVAL => unreachable,
+            .LOOP => error.SymLinkLoop,
+            .NAMETOOLONG => error.NameTooLong,
+            .NOENT => error.FileNotFound,
+            .NOMEM => error.SystemResources,
+            .NOTDIR => error.NotDir,
+            else => |err| defaultConvertError(err),
+        };
+    }
+
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
     }
@@ -842,13 +965,25 @@ pub const Statx = struct {
     pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.statx(@ptrToInt(node), self.fd, self.path, self.flags, self.mask, self.buf);
     }
-
-    const convertError = defaultConvertError;
 };
 
 pub const Shutdown = struct {
     sockfd: os.socket_t,
     how: u32,
+
+    const Error = std.os.ShutdownError || DefaultError;
+
+    pub fn convertError(linux_err: os.E) Error {
+        // Copied from std.os.shutdown.
+        return switch (linux_err) {
+            .BADF => unreachable,
+            .INVAL => unreachable,
+            .NOTCONN => error.SocketNotConnected,
+            .NOTSOCK => unreachable,
+            .NOBUFS => error.SystemResources,
+            else => |err| defaultConvertError(err),
+        };
+    }
 
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
@@ -857,8 +992,6 @@ pub const Shutdown = struct {
     pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.shutdown(@ptrToInt(node), self.sockfd, self.how);
     }
-
-    const convertError = defaultConvertError;
 };
 
 pub const RenameAt = struct {
@@ -867,6 +1000,33 @@ pub const RenameAt = struct {
     new_dir_fd: os.fd_t,
     new_path: [*:0]const u8,
     flags: u32,
+
+    const Error = std.os.RenameError || DefaultError;
+
+    pub fn convertError(linux_err: os.E) Error {
+        // Copied from std.os.renameatZ.
+        return switch (linux_err) {
+            .ACCES => error.AccessDenied,
+            .PERM => error.AccessDenied,
+            .BUSY => error.FileBusy,
+            .DQUOT => error.DiskQuota,
+            .FAULT => unreachable,
+            .INVAL => unreachable,
+            .ISDIR => error.IsDir,
+            .LOOP => error.SymLinkLoop,
+            .MLINK => error.LinkQuotaExceeded,
+            .NAMETOOLONG => error.NameTooLong,
+            .NOENT => error.FileNotFound,
+            .NOTDIR => error.NotDir,
+            .NOMEM => error.SystemResources,
+            .NOSPC => error.NoSpaceLeft,
+            .EXIST => error.PathAlreadyExists,
+            .NOTEMPTY => error.PathAlreadyExists,
+            .ROFS => error.ReadOnlyFileSystem,
+            .XDEV => error.RenameAcrossMountPoints,
+            else => |err| defaultConvertError(err),
+        };
+    }
 
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
@@ -882,14 +1042,34 @@ pub const RenameAt = struct {
             self.flags,
         );
     }
-
-    const convertError = defaultConvertError;
 };
 
 pub const UnlinkAt = struct {
     dir_fd: os.fd_t,
     path: [*:0]const u8,
     flags: u32,
+
+    const Error = std.os.UnlinkError || DefaultError;
+
+    pub fn convertError(linux_err: os.E) Error {
+        // Copied from std.os.unlinkZ.
+        return switch (linux_err) {
+            .ACCES => error.AccessDenied,
+            .PERM => error.AccessDenied,
+            .BUSY => error.FileBusy,
+            .FAULT => unreachable,
+            .INVAL => unreachable,
+            .IO => error.FileSystem,
+            .ISDIR => error.IsDir,
+            .LOOP => error.SymLinkLoop,
+            .NAMETOOLONG => error.NameTooLong,
+            .NOENT => error.FileNotFound,
+            .NOTDIR => error.NotDir,
+            .NOMEM => error.SystemResources,
+            .ROFS => error.ReadOnlyFileSystem,
+            else => |err| defaultConvertError(err),
+        };
+    }
 
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
@@ -898,14 +1078,36 @@ pub const UnlinkAt = struct {
     pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.unlinkat(@ptrToInt(node), self.dir_fd, self.path, self.flags);
     }
-
-    const convertError = defaultConvertError;
 };
 
 pub const MkdirAt = struct {
     dir_fd: os.fd_t,
     path: [*:0]const u8,
     mode: os.mode_t,
+
+    const Error = std.os.MakeDirError || DefaultError;
+
+    pub fn convertError(linux_err: os.E) Error {
+        // Copied from std.os.mkdiratZ.
+        return switch (linux_err) {
+            .ACCES => error.AccessDenied,
+            .BADF => unreachable,
+            .PERM => error.AccessDenied,
+            .DQUOT => error.DiskQuota,
+            .EXIST => error.PathAlreadyExists,
+            .FAULT => unreachable,
+            .LOOP => error.SymLinkLoop,
+            .MLINK => error.LinkQuotaExceeded,
+            .NAMETOOLONG => error.NameTooLong,
+            .NOENT => error.FileNotFound,
+            .NOMEM => error.SystemResources,
+            .NOSPC => error.NoSpaceLeft,
+            .NOTDIR => error.NotDir,
+            .ROFS => error.ReadOnlyFileSystem,
+            else => |err| defaultConvertError(err),
+        };
+    }
+
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
     }
@@ -913,14 +1115,35 @@ pub const MkdirAt = struct {
     pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.mkdirat(@ptrToInt(node), self.dir_fd, self.path, self.mode);
     }
-
-    const convertError = defaultConvertError;
 };
 
 pub const SymlinkAt = struct {
     target: [*:0]const u8,
     new_dir_fd: os.fd_t,
     link_path: [*:0]const u8,
+
+    const Error = std.os.SymLinkError || DefaultError;
+
+    pub fn convertError(linux_err: os.E) Error {
+        // Copied from std.os.symlinkatZ.
+        return switch (linux_err) {
+            .FAULT => unreachable,
+            .INVAL => unreachable,
+            .ACCES => return error.AccessDenied,
+            .PERM => return error.AccessDenied,
+            .DQUOT => return error.DiskQuota,
+            .EXIST => return error.PathAlreadyExists,
+            .IO => return error.FileSystem,
+            .LOOP => return error.SymLinkLoop,
+            .NAMETOOLONG => return error.NameTooLong,
+            .NOENT => return error.FileNotFound,
+            .NOTDIR => return error.NotDir,
+            .NOMEM => return error.SystemResources,
+            .NOSPC => return error.NoSpaceLeft,
+            .ROFS => return error.ReadOnlyFileSystem,
+            else => |err| defaultConvertError(err),
+        };
+    }
 
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
@@ -929,8 +1152,6 @@ pub const SymlinkAt = struct {
     pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
         return ring.symlinkat(@ptrToInt(node), self.target, self.new_dir_fd, self.link_path);
     }
-
-    const convertError = defaultConvertError;
 };
 
 pub const LinkAt = struct {
@@ -939,6 +1160,31 @@ pub const LinkAt = struct {
     new_dir_fd: os.fd_t,
     new_path: [*:0]const u8,
     flags: u32,
+
+    const Error = std.os.LinkatError || DefaultError;
+
+    pub fn convertError(linux_err: os.E) Error {
+        // Copied from std.os.linkatZ.
+        return switch (linux_err) {
+            .ACCES => error.AccessDenied,
+            .DQUOT => error.DiskQuota,
+            .EXIST => error.PathAlreadyExists,
+            .FAULT => unreachable,
+            .IO => error.FileSystem,
+            .LOOP => error.SymLinkLoop,
+            .MLINK => error.LinkQuotaExceeded,
+            .NAMETOOLONG => error.NameTooLong,
+            .NOENT => error.FileNotFound,
+            .NOMEM => error.SystemResources,
+            .NOSPC => error.NoSpaceLeft,
+            .NOTDIR => error.NotDir,
+            .PERM => error.AccessDenied,
+            .ROFS => error.ReadOnlyFileSystem,
+            .XDEV => error.NotSameFileSystem,
+            .INVAL => unreachable,
+            else => |err| defaultConvertError(err),
+        };
+    }
 
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
@@ -954,8 +1200,6 @@ pub const LinkAt = struct {
             self.flags,
         );
     }
-
-    const convertError = defaultConvertError;
 };
 
 pub const Send = struct {
@@ -963,35 +1207,37 @@ pub const Send = struct {
     buffer: []const u8,
     flags: u32,
 
-    pub fn convertError(linux_err: os.E) anyerror {
-        // More or less copied from https://github.com/lithdew/rheia/blob/5ff018cf05ab0bf118e5cdcc35cf1c787150b87c/runtime.zig#L604-L632.
+    const Error = std.os.SendError || DefaultError;
+
+    pub fn convertError(linux_err: os.E) Error {
+        // Copied from std.os.sendto + std.os.send.
+        // TODO: Double-check some of these unreachables with send man pages.
         return switch (linux_err) {
             .ACCES => error.AccessDenied,
             .AGAIN => error.WouldBlock,
             .ALREADY => error.FastOpenAlreadyInProgress,
-            .BADF => unreachable,
+            .BADF => unreachable, // always a race condition
             .CONNRESET => error.ConnectionResetByPeer,
-            .DESTADDRREQ => unreachable,
-            .FAULT => unreachable,
-            .INVAL => unreachable,
-            .ISCONN => unreachable,
+            .DESTADDRREQ => unreachable, // The socket is not connection-mode, and no peer address is set.
+            .FAULT => unreachable, // An invalid user space address was specified for an argument.
+            .INVAL => unreachable, // Invalid argument passed.
+            .ISCONN => unreachable, // connection-mode socket was connected already but a recipient was specified
             .MSGSIZE => error.MessageTooBig,
             .NOBUFS => error.SystemResources,
             .NOMEM => error.SystemResources,
-            .NOTSOCK => unreachable,
-            .OPNOTSUPP => unreachable,
+            .NOTSOCK => unreachable, // The file descriptor sockfd does not refer to a socket.
+            .OPNOTSUPP => unreachable, // Some bit in the flags argument is inappropriate for the socket type.
             .PIPE => error.BrokenPipe,
-            .AFNOSUPPORT => error.AddressFamilyNotSupported,
-            .LOOP => error.SymLinkLoop,
-            .NAMETOOLONG => error.NameTooLong,
-            .NOENT => error.FileNotFound,
-            .NOTDIR => error.NotDir,
-            .HOSTUNREACH => error.NetworkUnreachable,
-            .NETUNREACH => error.NetworkUnreachable,
-            .NOTCONN => error.SocketNotConnected,
+            .AFNOSUPPORT => unreachable,
+            .LOOP => unreachable,
+            .NAMETOOLONG => unreachable,
+            .NOENT => unreachable,
+            .NOTDIR => unreachable,
+            .HOSTUNREACH => unreachable,
+            .NETUNREACH => unreachable,
+            .NOTCONN => unreachable,
             .NETDOWN => error.NetworkSubsystemFailed,
-            .CANCELED => error.Cancelled,
-            else => |err| os.unexpectedErrno(err),
+            else => |err| defaultConvertError(err),
         };
     }
 
@@ -1010,7 +1256,36 @@ pub const OpenAt = struct {
     flags: u32,
     mode: os.mode_t,
 
-    const convertError = defaultConvertError;
+    const Error = std.os.OpenError || DefaultError;
+
+    pub fn convertError(linux_err: os.E) Error {
+        // Copied from std.os.openatZ.
+        return switch (linux_err) {
+            .FAULT => unreachable,
+            .INVAL => unreachable,
+            .BADF => unreachable,
+            .ACCES => error.AccessDenied,
+            .FBIG => error.FileTooBig,
+            .OVERFLOW => error.FileTooBig,
+            .ISDIR => error.IsDir,
+            .LOOP => error.SymLinkLoop,
+            .MFILE => error.ProcessFdQuotaExceeded,
+            .NAMETOOLONG => error.NameTooLong,
+            .NFILE => error.SystemFdQuotaExceeded,
+            .NODEV => error.NoDevice,
+            .NOENT => error.FileNotFound,
+            .NOMEM => error.SystemResources,
+            .NOSPC => error.NoSpaceLeft,
+            .NOTDIR => error.NotDir,
+            .PERM => error.AccessDenied,
+            .EXIST => error.PathAlreadyExists,
+            .BUSY => error.DeviceBusy,
+            .OPNOTSUPP => error.FileLocksNotSupported,
+            .AGAIN => error.WouldBlock,
+            .TXTBSY => error.FileBusy,
+            else => |err| defaultConvertError(err),
+        };
+    }
 
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
@@ -1024,7 +1299,19 @@ pub const OpenAt = struct {
 pub const Close = struct {
     fd: os.fd_t,
 
-    const convertError = defaultConvertError;
+    const Error = DefaultError;
+
+    // TODO: The stdlib says that INTR on close is actually an indicator of
+    // success - so we may need a way to convert that to success here. For now,
+    // the caller can ignore error.Cancelled.
+    pub fn convertError(linux_err: os.E) Error {
+        // Copied from std.os.close.
+        return switch (linux_err) {
+            .BADF => unreachable, // Always a race condition.
+            else => |err| defaultConvertError(err),
+        };
+    }
+
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
     }
@@ -1056,7 +1343,12 @@ pub const Cancel = struct {
 };
 
 pub const Nop = struct {
-    const convertError = defaultConvertError;
+    const Error = DefaultError;
+
+    pub fn convertError(linux_err: os.E) Error {
+        return defaultConvertError(linux_err);
+    }
+
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
     }
@@ -1072,7 +1364,22 @@ pub const EpollCtl = struct {
     op: u32,
     ev: ?*linux.epoll_event,
 
-    const convertError = defaultConvertError;
+    const Error = std.os.EpollCtlError || DefaultError;
+
+    pub fn convertError(linux_err: os.E) Error {
+        // Copied from std.os.epoll_ctl.
+        return switch (linux_err) {
+            .BADF => unreachable, // always a race condition if this happens
+            .EXIST => error.FileDescriptorAlreadyPresentInSet,
+            .INVAL => unreachable,
+            .LOOP => error.OperationCausesCircularLoop,
+            .NOENT => error.FileDescriptorNotRegistered,
+            .NOMEM => error.SystemResources,
+            .NOSPC => error.UserResourceLimitReached,
+            .PERM => error.FileDescriptorIncompatibleWithEpoll,
+            else => |err| defaultConvertError(err),
+        };
+    }
 
     pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
         return 1;
