@@ -12,6 +12,10 @@ const IO_Uring = linux.IO_Uring;
 /// Usage requires calling AsyncIOUring.run_event_loop to submit and process
 /// completion queue entries.
 ///
+/// AsyncIOUring is NOT thread-safe. If you wish to have a multi-threaded
+/// event-loop, you should create one AsyncIOUring object per thread and only
+/// use it within the thread where it was created.
+///
 /// As an overview for the unfamiliar, io_uring works by allowing users to
 /// enqueue requests into a submission queue (e.g. a request to read from a
 /// socket) and then submit the submission queue to the kernel for processing.
@@ -19,6 +23,10 @@ const IO_Uring = linux.IO_Uring;
 /// placed onto completion queue by the kernel. The user is able to either poll
 /// the kernel for completion queue results or block until results are
 /// available.
+///
+/// Note on abbreviations:
+///      SQE == submission queue entry
+///      CQE == completion queue entry
 ///
 /// Parts of the function-level comments were copied from the IO_Uring library.
 /// More details on each function can be found in the comments of the IO_Uring
@@ -28,58 +36,80 @@ const IO_Uring = linux.IO_Uring;
 /// operation struct with a custom run function. See 
 /// testReadWithManualAPIAndOverridenSubmit for an example.
 ///
-/// Note on abbreviations:
-///      SQE == submission queue entry
-///      CQE == completion queue entry
-///
 /// TODO: 
 ///     * Implement or demonstrate how to mimic the behavior of timeout and
 ///       timeout_remove (1 hr)
 ///     * Implement poll_add, poll_remove, poll_update - the latter two require
 ///       user_data from poll_add (30 min - 1 hr)
+///     * Constrain the error set of `do` so that individual operations can
+///       constrain their own error sets.
 pub const AsyncIOUring = struct {
-    // Users may access this field directly to call functionson the IO_Uring
-    // which do not require use of the submission queue, such as register_files
-    // and the other register_* functions.
+    /// Users may access this field directly to call functions on the IO_Uring
+    /// which do not require use of the submission queue, such as register_files
+    /// and the other register_* functions.
     ring: *IO_Uring = undefined,
 
-    // Number of events submitted minus number of events completed. We can
-    // exit when this is 0.
+    /// Number of events submitted minus number of events completed. We can
+    /// exit when this is 0.
+    ///
+    /// This should not be modified outside of AsyncIOUring.
     num_outstanding_events: u64 = 0,
 
     /// Runs a loop to submit tasks on the underlying IO_Uring and block waiting
     /// for completion events. When a completion queue event (cqe) is available, it
     /// will resume the coroutine that submitted the request corresponding to that cqe.
     pub fn run_event_loop(self: *AsyncIOUring) !void {
-        // TODO: Make this a comptime parameter?
+        // TODO: Make the size of this a comptime parameter?
         var cqes: [4096]linux.io_uring_cqe = undefined;
-        // We want our program to resume as soon as any event we've submitted
-        // is ready, so we set this to 1.
-        const max_num_events_to_wait_for_in_kernel = 1;
-
+        // Loop until no new events were processed. This happens only when no
+        // new events were submitted or completed, which means there's no more
+        // work left to do.
         while (true) {
-            const num_submitted = try self.ring.submit();
-            self.num_outstanding_events += num_submitted;
-
-            // If we have no outstanding events even after submitting, that
-            // means there's no more work to be done and we can exit.
-            if (self.num_outstanding_events == 0) {
+            const num_events_processed = try self.process_outstanding_events(cqes[0..]);
+            if (num_events_processed == 0) {
                 break;
             }
+        }
+    }
 
-            const num_ready_cqes = try self.ring.copy_cqes(cqes[0..], max_num_events_to_wait_for_in_kernel);
+    /// Submits any outstanding requests, and processes events in the completion
+    /// queue. When a completion queue event (cqe) is available, the coroutine
+    /// that submitted the request corresponding to that cqe will be resumed.
+    ///
+    /// This may be used for more custom use cases that want to control how
+    /// iterations of the event loop are scheduled. You should not be using
+    /// this if you're also using run_event_loop.
+    ///
+    /// Returns the number of events that were processed in the completion
+    /// queue. If this number is 0, that means no new work was submitted since
+    /// the last time this function was called.
+    pub fn process_outstanding_events(self: *AsyncIOUring, cqes: []linux.io_uring_cqe) !u32 {
+        const num_submitted = try self.ring.submit();
+        self.num_outstanding_events += num_submitted;
 
-            self.num_outstanding_events -= num_ready_cqes;
+        // If we have no outstanding events even after submitting, that
+        // means there's no more work to be done and we can exit.
+        if (self.num_outstanding_events == 0) {
+            return 0;
+        }
 
-            for (cqes[0..num_ready_cqes]) |cqe| {
-                if (cqe.user_data != 0) {
-                    var resume_node = @intToPtr(*ResumeNode, cqe.user_data);
-                    resume_node.result = cqe;
-                    // Resume the frame that enqueued the original request.
-                    resume resume_node.frame;
-                }
+        // The second parameter of copy_cqes indicates how many events we
+        // should wait for in the kernel before being resumed. We want our
+        // program to resume as soon as any event we've submitted is ready,
+        // so we set the second parameter to 1.
+        const num_ready_cqes = try self.ring.copy_cqes(cqes[0..], 1);
+
+        self.num_outstanding_events -= num_ready_cqes;
+
+        for (cqes[0..num_ready_cqes]) |cqe| {
+            if (cqe.user_data != 0) {
+                var resume_node = @intToPtr(*ResumeNode, cqe.user_data);
+                resume_node.result = cqe;
+                // Resume the frame that enqueued the original request.
+                resume resume_node.frame;
             }
         }
+        return num_ready_cqes;
     }
 
     /// Submits a user-supplied IO_Uring operation to the submission queue and
@@ -148,8 +178,7 @@ pub const AsyncIOUring = struct {
         // this operation is processed in the completion queue.
         suspend {}
 
-        // If the return code indicates success,
-        // return the result.
+        // If the return code indicates success, return the result.
         if (node.result.res >= 0) {
             return node.result;
         } else {
