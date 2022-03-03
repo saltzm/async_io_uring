@@ -178,12 +178,12 @@ pub const AsyncIOUring = struct {
         // this operation is processed in the completion queue.
         suspend {}
 
-        // If the return code indicates success, return the result.
-        if (node.result.res >= 0) {
-            return node.result;
-        } else {
-            return @TypeOf(op).convertError(@intToEnum(os.E, -node.result.res));
-        }
+        // If the return code indicates success, return the result - otherwise
+        // return an op-defined zig error corresponding to the Linux error code.
+        return switch (node.result.err()) {
+            .SUCCESS => node.result,
+            else => |err| @TypeOf(op).convertError(err),
+        };
     }
 
     /// Queues (but does not submit) an SQE to remove an existing operation and suspends until the
