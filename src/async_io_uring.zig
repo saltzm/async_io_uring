@@ -158,7 +158,7 @@ pub const AsyncIOUring = struct {
         }
 
         // Submit the IO_Uring op to the submission queue.
-        const sqe = try op.submit(self.ring, &node);
+        const sqe = try op.submit(self.ring, @ptrToInt(&node));
         // Attach a linked timeout if one is supplied.
         if (timeout) |t| {
             sqe.flags |= linux.IOSQE_IO_LINK;
@@ -616,8 +616,8 @@ pub const Read = struct {
         return 1;
     }
 
-    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return try ring.read(@ptrToInt(node), op.fd, op.buffer, op.offset);
+    pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return try ring.read(user_data, op.fd, op.buffer, op.offset);
     }
 
     /// See read man pages for specific meaning of possible errors: 
@@ -669,8 +669,8 @@ pub const Write = struct {
         return 1;
     }
 
-    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.write(@ptrToInt(node), op.fd, op.buffer, op.offset);
+    pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.write(user_data, op.fd, op.buffer, op.offset);
     }
 };
 
@@ -703,8 +703,8 @@ pub const ReadV = struct {
         return 1;
     }
 
-    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.readv(@ptrToInt(node), op.fd, op.iovecs, op.offset);
+    pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.readv(user_data, op.fd, op.iovecs, op.offset);
     }
 };
 
@@ -721,8 +721,8 @@ pub const ReadFixed = struct {
         return 1;
     }
 
-    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.read_fixed(@ptrToInt(node), op.fd, op.buffer, op.offset, op.buffer_index);
+    pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.read_fixed(user_data, op.fd, op.buffer, op.offset, op.buffer_index);
     }
 };
 
@@ -756,8 +756,8 @@ pub const WriteV = struct {
         return 1;
     }
 
-    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.writev(@ptrToInt(node), op.fd, op.iovecs, op.offset);
+    pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.writev(user_data, op.fd, op.iovecs, op.offset);
     }
 };
 
@@ -774,8 +774,8 @@ pub const WriteFixed = struct {
         return 1;
     }
 
-    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.write_fixed(@ptrToInt(node), op.fd, op.buffer, op.offset, op.buffer_index);
+    pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.write_fixed(user_data, op.fd, op.buffer, op.offset, op.buffer_index);
     }
 };
 
@@ -811,8 +811,8 @@ pub const Accept = struct {
         return 1;
     }
 
-    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.accept(@ptrToInt(node), op.fd, op.addr, op.addrlen, op.flags);
+    pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.accept(user_data, op.fd, op.addr, op.addrlen, op.flags);
     }
 };
 
@@ -851,8 +851,8 @@ pub const Connect = struct {
         return 1;
     }
 
-    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.connect(@ptrToInt(node), op.fd, op.addr, op.addrlen);
+    pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.connect(user_data, op.fd, op.addr, op.addrlen);
     }
 };
 
@@ -867,8 +867,8 @@ pub const Recv = struct {
         return 1;
     }
 
-    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.recv(@ptrToInt(node), op.fd, op.buffer, op.flags);
+    pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.recv(user_data, op.fd, op.buffer, op.flags);
     }
 
     pub fn convertError(linux_err: os.E) Error {
@@ -909,8 +909,8 @@ pub const Fsync = struct {
         return 1;
     }
 
-    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.fsync(@ptrToInt(node), self.fd, self.flags);
+    pub fn submit(self: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.fsync(user_data, self.fd, self.flags);
     }
 };
 
@@ -924,8 +924,8 @@ pub const Fallocate = struct {
         return 1;
     }
 
-    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.fallocate(@ptrToInt(node), self.fd, self.mode, self.offset, self.len);
+    pub fn submit(self: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.fallocate(user_data, self.fd, self.mode, self.offset, self.len);
     }
 
     const Error = DefaultError;
@@ -991,8 +991,8 @@ pub const Statx = struct {
         return 1;
     }
 
-    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.statx(@ptrToInt(node), self.fd, self.path, self.flags, self.mask, self.buf);
+    pub fn submit(self: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.statx(user_data, self.fd, self.path, self.flags, self.mask, self.buf);
     }
 };
 
@@ -1018,8 +1018,8 @@ pub const Shutdown = struct {
         return 1;
     }
 
-    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.shutdown(@ptrToInt(node), self.sockfd, self.how);
+    pub fn submit(self: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.shutdown(user_data, self.sockfd, self.how);
     }
 };
 
@@ -1061,9 +1061,9 @@ pub const RenameAt = struct {
         return 1;
     }
 
-    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+    pub fn submit(self: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
         return ring.renameat(
-            @ptrToInt(node),
+            user_data,
             self.old_dir_fd,
             self.old_path,
             self.new_dir_fd,
@@ -1104,8 +1104,8 @@ pub const UnlinkAt = struct {
         return 1;
     }
 
-    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.unlinkat(@ptrToInt(node), self.dir_fd, self.path, self.flags);
+    pub fn submit(self: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.unlinkat(user_data, self.dir_fd, self.path, self.flags);
     }
 };
 
@@ -1141,8 +1141,8 @@ pub const MkdirAt = struct {
         return 1;
     }
 
-    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.mkdirat(@ptrToInt(node), self.dir_fd, self.path, self.mode);
+    pub fn submit(self: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.mkdirat(user_data, self.dir_fd, self.path, self.mode);
     }
 };
 
@@ -1178,8 +1178,8 @@ pub const SymlinkAt = struct {
         return 1;
     }
 
-    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.symlinkat(@ptrToInt(node), self.target, self.new_dir_fd, self.link_path);
+    pub fn submit(self: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.symlinkat(user_data, self.target, self.new_dir_fd, self.link_path);
     }
 };
 
@@ -1219,9 +1219,9 @@ pub const LinkAt = struct {
         return 1;
     }
 
-    pub fn submit(self: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+    pub fn submit(self: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
         return ring.linkat(
-            @ptrToInt(node),
+            user_data,
             self.old_dir_fd,
             self.old_path,
             self.new_dir_fd,
@@ -1274,8 +1274,8 @@ pub const Send = struct {
         return 1;
     }
 
-    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.send(@ptrToInt(node), op.fd, op.buffer, op.flags);
+    pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.send(user_data, op.fd, op.buffer, op.flags);
     }
 };
 
@@ -1320,8 +1320,8 @@ pub const OpenAt = struct {
         return 1;
     }
 
-    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.openat(@ptrToInt(node), op.fd, op.path, op.flags, op.mode);
+    pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.openat(user_data, op.fd, op.path, op.flags, op.mode);
     }
 };
 
@@ -1345,8 +1345,8 @@ pub const Close = struct {
         return 1;
     }
 
-    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.close(@ptrToInt(node), op.fd);
+    pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.close(user_data, op.fd);
     }
 };
 
@@ -1366,8 +1366,8 @@ pub const Cancel = struct {
         return 1;
     }
 
-    pub fn submit(op: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.cancel(@ptrToInt(node), op.cancel_user_data, op.flags);
+    pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.cancel(user_data, op.cancel_user_data, op.flags);
     }
 };
 
@@ -1382,8 +1382,8 @@ pub const Nop = struct {
         return 1;
     }
 
-    pub fn submit(_: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.nop(@ptrToInt(node));
+    pub fn submit(_: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.nop(user_data);
     }
 };
 
@@ -1414,8 +1414,8 @@ pub const EpollCtl = struct {
         return 1;
     }
 
-    pub fn submit(this: @This(), ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
-        return ring.epoll_ctl(@ptrToInt(node), this.epfd, this.fd, this.op, this.ev);
+    pub fn submit(this: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.epoll_ctl(user_data, this.epfd, this.fd, this.op, this.ev);
     }
 };
 
@@ -1597,9 +1597,9 @@ fn testReadWithManualAPIAndOverridenSubmit(ring: *AsyncIOUring) !void {
             return 1;
         }
 
-        pub fn submit(self: @This(), my_ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        pub fn submit(self: @This(), my_ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
             self.value_to_set.* = true;
-            return try my_ring.read(@ptrToInt(node), self.read.fd, self.read.buffer, self.read.offset);
+            return try my_ring.read(user_data, self.read.fd, self.read.buffer, self.read.offset);
         }
     } = .{
         .read = .{
@@ -1632,14 +1632,14 @@ fn testOverridingNumberOfSQEs(ring: *AsyncIOUring) !void {
             return 2;
         }
 
-        pub fn submit(self: @This(), my_ring: *IO_Uring, node: *ResumeNode) !*linux.io_uring_sqe {
+        pub fn submit(self: @This(), my_ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
             self.value_to_set.* = true;
             // TODO: Using this in practice will probably be a bit tricky since
             // the timeout only applies to whatever this function returns, not
             // to the first op. This interface maybe seems more generic than it
             // actually is, which sould be a problem
             _ = try my_ring.nop(0);
-            return try my_ring.nop(@ptrToInt(node));
+            return try my_ring.nop(user_data);
         }
     } = .{
         .value_to_set = &ran_custom_submit,
