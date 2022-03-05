@@ -114,7 +114,7 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t, _: u64) !void {
             open_conns[idx] = async handle_connection(ring, new_conn_fd, idx, &closed_conns, &num_closed_conns);
         } else {
             // std.debug.print("Reached connection limit, refusing connection. \n", .{});
-            _ = try ring.close(0, new_conn_fd, null, null);
+            _ = try ring.close(new_conn_fd, null, null);
         }
     }
 
