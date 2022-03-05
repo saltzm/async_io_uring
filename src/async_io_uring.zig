@@ -182,7 +182,11 @@ pub const AsyncIOUring = struct {
         // return an op-defined zig error corresponding to the Linux error code.
         return switch (node.result.err()) {
             .SUCCESS => node.result,
-            else => |err| @TypeOf(op).convertError(err),
+            else => |linux_err| if (@TypeOf(op).convertError(linux_err)) |err| {
+                return err;
+            } else {
+                return node.result;
+            },
         };
     }
 
@@ -648,7 +652,7 @@ pub const Read = struct {
 
     /// See read man pages for specific meaning of possible errors: 
     /// http://manpages.ubuntu.com/manpages/impish/man2/read.2.html#errors
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         return switch (linux_err) {
             // Copied from std.os.read.
             .INVAL => unreachable,
@@ -673,7 +677,7 @@ pub const Write = struct {
 
     const Error = std.os.WriteError || DefaultError;
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         return switch (linux_err) {
             // Copied from std.os.write.
             .INVAL => unreachable,
@@ -707,7 +711,7 @@ pub const ReadV = struct {
 
     const Error = std.os.PReadError || DefaultError;
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.preadv.
         return switch (linux_err) {
             .INVAL => unreachable,
@@ -759,7 +763,7 @@ pub const WriteV = struct {
 
     const Error = std.os.PWriteError || DefaultError;
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.pwritev.
         return switch (linux_err) {
             .INVAL => unreachable,
@@ -813,7 +817,7 @@ pub const Accept = struct {
 
     const Error = std.os.AcceptError || DefaultError;
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.accept.
         return switch (linux_err) {
             .AGAIN => error.WouldBlock,
@@ -849,7 +853,7 @@ pub const Connect = struct {
 
     const Error = std.os.ConnectError || DefaultError;
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.connect.
         return switch (linux_err) {
             .ACCES => error.PermissionDenied,
@@ -897,7 +901,7 @@ pub const Recv = struct {
         return ring.recv(user_data, op.fd, op.buffer, op.flags);
     }
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.recvfrom.
         return switch (linux_err) {
             .BADF => unreachable, // always a race condition
@@ -920,7 +924,7 @@ pub const Fsync = struct {
 
     const Error = std.os.SyncError || DefaultError;
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.fsync.
         return switch (linux_err) {
             .BADF, .INVAL, .ROFS => unreachable,
@@ -959,7 +963,7 @@ pub const Fallocate = struct {
     // TODO: fallocate can only return '1' as an error code according to the
     // manpages. Right now this will lead to "UnexpectedError" which is not
     // really correct.
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         return defaultConvertError(linux_err);
     }
 };
@@ -992,7 +996,7 @@ pub const Statx = struct {
         NotDir,
     } || DefaultError;
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.preadv.
         return switch (linux_err) {
             .ACCESS => error.AccessDenied,
@@ -1028,7 +1032,7 @@ pub const Shutdown = struct {
 
     const Error = std.os.ShutdownError || DefaultError;
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.shutdown.
         return switch (linux_err) {
             .BADF => unreachable,
@@ -1058,7 +1062,7 @@ pub const RenameAt = struct {
 
     const Error = std.os.RenameError || DefaultError;
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.renameatZ.
         return switch (linux_err) {
             .ACCES => error.AccessDenied,
@@ -1106,7 +1110,7 @@ pub const UnlinkAt = struct {
 
     const Error = std.os.UnlinkError || DefaultError;
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.unlinkZ.
         return switch (linux_err) {
             .ACCES => error.AccessDenied,
@@ -1142,7 +1146,7 @@ pub const MkdirAt = struct {
 
     const Error = std.os.MakeDirError || DefaultError;
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.mkdiratZ.
         return switch (linux_err) {
             .ACCES => error.AccessDenied,
@@ -1179,7 +1183,7 @@ pub const SymlinkAt = struct {
 
     const Error = std.os.SymLinkError || DefaultError;
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.symlinkatZ.
         return switch (linux_err) {
             .FAULT => unreachable,
@@ -1218,7 +1222,7 @@ pub const LinkAt = struct {
 
     const Error = std.os.LinkatError || DefaultError;
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.linkatZ.
         return switch (linux_err) {
             .ACCES => error.AccessDenied,
@@ -1264,7 +1268,7 @@ pub const Send = struct {
 
     const Error = std.os.SendError || DefaultError;
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.sendto + std.os.send.
         // TODO: Double-check some of these unreachables with send man pages.
         return switch (linux_err) {
@@ -1313,7 +1317,7 @@ pub const OpenAt = struct {
 
     const Error = std.os.OpenError || DefaultError;
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.openatZ.
         return switch (linux_err) {
             .FAULT => unreachable,
@@ -1359,7 +1363,7 @@ pub const Close = struct {
     // TODO: The stdlib says that INTR on close is actually an indicator of
     // success - so we may need a way to convert that to success here. For now,
     // the caller can ignore error.Cancelled.
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.close.
         return switch (linux_err) {
             .BADF => unreachable, // Always a race condition.
@@ -1380,7 +1384,7 @@ pub const Cancel = struct {
     cancel_user_data: u64,
     flags: u32,
 
-    pub fn convertError(linux_err: os.E) anyerror {
+    pub fn convertError(linux_err: os.E) ?anyerror {
         return switch (linux_err) {
             .ALREADY => error.OperationAlreadyInProgress,
             .NOENT => error.OperationNotFound,
@@ -1403,9 +1407,9 @@ pub const TimeOut = struct {
     count: u32,
     flags: u32,
 
-    pub fn convertError(linux_err: os.E) anyerror {
+    pub fn convertError(linux_err: os.E) ?anyerror {
         return switch (linux_err) {
-            // TODO Convert ETIME to success.
+            .TIME => @as(?anyerror, null),
             else => |err| return defaultConvertError(err),
         };
     }
@@ -1422,7 +1426,7 @@ pub const TimeOut = struct {
 pub const Nop = struct {
     const Error = DefaultError;
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         return defaultConvertError(linux_err);
     }
 
@@ -1443,7 +1447,7 @@ pub const EpollCtl = struct {
 
     const Error = std.os.EpollCtlError || DefaultError;
 
-    pub fn convertError(linux_err: os.E) Error {
+    pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.epoll_ctl.
         return switch (linux_err) {
             .BADF => unreachable, // always a race condition if this happens
@@ -1859,6 +1863,33 @@ test "cancelling an operation that doesn't exist returns error.OperationNotFound
     var async_ring = AsyncIOUring{ .ring = &ring };
 
     var cancel_frame = async testCancellingNonExistentOperation(&async_ring);
+
+    try async_ring.run_event_loop();
+
+    try nosuspend await cancel_frame;
+}
+
+pub fn testShortTimeout(ring: *AsyncIOUring) !void {
+    const ts = os.linux.kernel_timespec{ .tv_sec = 0, .tv_nsec = 10000 };
+    const cqe = try ring.timeout(&ts, 0, 0, null);
+    // If there are no errors, this test passes.
+    // Also check that the CQE error result is as expected according to the
+    // IO_Uring docs.
+    try std.testing.expectEqual(cqe.res, -@intCast(i32, @enumToInt(os.E.TIME)));
+}
+
+test "timeout for short timeout returns success" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var ring = IO_Uring.init(2, 0) catch |err| switch (err) {
+        error.SystemOutdated => return error.SkipZigTest,
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer ring.deinit();
+    var async_ring = AsyncIOUring{ .ring = &ring };
+
+    var cancel_frame = async testShortTimeout(&async_ring);
 
     try async_ring.run_event_loop();
 
