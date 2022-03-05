@@ -136,8 +136,8 @@ pub const AsyncIOUring = struct {
     pub fn do(
         self: *AsyncIOUring,
         op: anytype,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
 
@@ -147,7 +147,7 @@ pub const AsyncIOUring = struct {
         // this operation.
         {
             const num_required_sqes_for_op = op.getNumRequiredSubmissionQueueEntries();
-            const num_required_sqes = if (timeout) |_| num_required_sqes_for_op + 1 else num_required_sqes_for_op;
+            const num_required_sqes = if (maybe_timeout) |_| num_required_sqes_for_op + 1 else num_required_sqes_for_op;
 
             const num_free_entries_in_sq = @intCast(u32, self.ring.sq.sqes.len - self.ring.sq_ready());
             if (num_free_entries_in_sq < num_required_sqes) {
@@ -160,18 +160,18 @@ pub const AsyncIOUring = struct {
         // Submit the IO_Uring op to the submission queue.
         const sqe = try op.submit(self.ring, @ptrToInt(&node));
         // Attach a linked timeout if one is supplied.
-        if (timeout) |t| {
+        if (maybe_timeout) |t| {
             sqe.flags |= linux.IOSQE_IO_LINK;
-            // No user data - we don't care about the result, since it
-            // will show up in the result of sqe as -INTR if the
-            // timeout expires before the operation completes.
+            // No user data - we don't care about the result, since it will
+            // show up in the result of sqe as -INTR if the timeout expires
+            // before the operation completes.
             _ = try self.ring.link_timeout(0, t.ts, t.flags);
         }
 
         // Set the id for cancellation if one is supplied. Note: This must go
         // prior to suspend.
-        if (id) |i| {
-            i.* = @ptrToInt(&node);
+        if (maybe_id) |id| {
+            id.* = @ptrToInt(&node);
         }
 
         // Suspend here until resumed by the event loop when the result of
@@ -205,10 +205,36 @@ pub const AsyncIOUring = struct {
         self: *AsyncIOUring,
         operation_id: u64,
         flags: u32,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Cancel{ .cancel_user_data = operation_id, .flags = flags }, timeout, id);
+        return self.do(Cancel{ .cancel_user_data = operation_id, .flags = flags }, maybe_timeout, maybe_id);
+    }
+
+    /// Queues (but does not submit) an SQE to register a timeout operation and
+    /// suspends until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
+    ///
+    /// The timeout will complete when either the timeout expires, or after the specified number of
+    /// events complete (if `count` is greater than `0`).
+    ///
+    /// `flags` may be `0` for a relative timeout, or `IORING_TIMEOUT_ABS` for an absolute timeout.
+    ///
+    /// The completion event result will be `-ETIME` if the timeout completed through expiration,
+    /// `0` if the timeout completed after the specified number of events, or `-ECANCELED` if the
+    /// timeout was removed before it expired.
+    ///
+    /// io_uring timeouts use the `CLOCK.MONOTONIC` clock source.
+    pub fn timeout(
+        self: *AsyncIOUring,
+        ts: *const os.linux.kernel_timespec,
+        count: u32,
+        flags: u32,
+        // Note that there's no ability to add a "timeout" to a timeout because that wouldn't make sense.
+        maybe_id: ?*usize,
+    ) !linux.io_uring_cqe {
+        return self.do(TimeOut{ .ts = ts, .count = count, .flags = flags }, null, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform an `fsync(2)` and
@@ -219,10 +245,10 @@ pub const AsyncIOUring = struct {
         self: *AsyncIOUring,
         fd: os.fd_t,
         flags: u32,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Fsync{ .fd = fd, .flags = flags }, timeout, id);
+        return self.do(Fsync{ .fd = fd, .flags = flags }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a no-op and suspends
@@ -231,10 +257,10 @@ pub const AsyncIOUring = struct {
     /// Returns the CQE for the operation.
     pub fn nop(
         self: *AsyncIOUring,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Nop{}, timeout, id);
+        return self.do(Nop{}, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a `read(2)` and suspends
@@ -246,10 +272,10 @@ pub const AsyncIOUring = struct {
         fd: os.fd_t,
         buffer: []u8,
         offset: u64,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Read{ .fd = fd, .buffer = buffer, .offset = offset }, timeout, id);
+        return self.do(Read{ .fd = fd, .buffer = buffer, .offset = offset }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a `write(2)` and suspends
@@ -261,10 +287,10 @@ pub const AsyncIOUring = struct {
         fd: os.fd_t,
         buffer: []const u8,
         offset: u64,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Write{ .fd = fd, .buffer = buffer, .offset = offset }, timeout, id);
+        return self.do(Write{ .fd = fd, .buffer = buffer, .offset = offset }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a `preadv()` and suspends
@@ -276,10 +302,10 @@ pub const AsyncIOUring = struct {
         fd: os.fd_t,
         iovecs: []const os.iovec,
         offset: u64,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(ReadV{ .fd = fd, .iovecs = iovecs, .offset = offset }, timeout, id);
+        return self.do(ReadV{ .fd = fd, .iovecs = iovecs, .offset = offset }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a IORING_OP_READ_FIXED and suspends
@@ -292,10 +318,10 @@ pub const AsyncIOUring = struct {
         buffer: *os.iovec,
         offset: u64,
         buffer_index: u16,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(ReadFixed{ .fd = fd, .buffer = buffer, .offset = offset, .buffer_index = buffer_index }, timeout, id);
+        return self.do(ReadFixed{ .fd = fd, .buffer = buffer, .offset = offset, .buffer_index = buffer_index }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a `pwritev()` and suspends
@@ -307,10 +333,10 @@ pub const AsyncIOUring = struct {
         fd: os.fd_t,
         iovecs: []const os.iovec_const,
         offset: u64,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(WriteV{ .fd = fd, .iovecs = iovecs, .offset = offset }, timeout, id);
+        return self.do(WriteV{ .fd = fd, .iovecs = iovecs, .offset = offset }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a IORING_OP_WRITE_FIXED and suspends
@@ -323,10 +349,10 @@ pub const AsyncIOUring = struct {
         buffer: *os.iovec,
         offset: u64,
         buffer_index: u16,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(WriteFixed{ .fd = fd, .buffer = buffer, .offset = offset, .buffer_index = buffer_index }, timeout, id);
+        return self.do(WriteFixed{ .fd = fd, .buffer = buffer, .offset = offset, .buffer_index = buffer_index }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform an `accept4(2)` on a socket and suspends
@@ -339,10 +365,10 @@ pub const AsyncIOUring = struct {
         addr: *os.sockaddr,
         addrlen: *os.socklen_t,
         flags: u32,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Accept{ .fd = fd, .addr = addr, .addrlen = addrlen, .flags = flags }, timeout, id);
+        return self.do(Accept{ .fd = fd, .addr = addr, .addrlen = addrlen, .flags = flags }, maybe_timeout, maybe_id);
     }
 
     /// Queue (but does not submit) an SQE to perform a `connect(2)` on a socket and suspends
@@ -354,10 +380,10 @@ pub const AsyncIOUring = struct {
         fd: os.fd_t,
         addr: *const os.sockaddr,
         addrlen: os.socklen_t,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Connect{ .fd = fd, .addr = addr, .addrlen = addrlen }, timeout, id);
+        return self.do(Connect{ .fd = fd, .addr = addr, .addrlen = addrlen }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a `epoll_ctl(2)` and suspends
@@ -370,10 +396,10 @@ pub const AsyncIOUring = struct {
         fd: os.fd_t,
         op: u32,
         ev: ?*linux.epoll_event,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(EpollCtl{ .epfd = epfd, .fd = fd, .op = op, .ev = ev }, timeout, id);
+        return self.do(EpollCtl{ .epfd = epfd, .fd = fd, .op = op, .ev = ev }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a `recv(2)` and suspends
@@ -385,10 +411,10 @@ pub const AsyncIOUring = struct {
         fd: os.fd_t,
         buffer: []u8,
         flags: u32,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Recv{ .fd = fd, .buffer = buffer, .flags = flags }, timeout, id);
+        return self.do(Recv{ .fd = fd, .buffer = buffer, .flags = flags }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a `send(2)` and suspends
@@ -400,10 +426,10 @@ pub const AsyncIOUring = struct {
         fd: os.fd_t,
         buffer: []const u8,
         flags: u32,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Send{ .fd = fd, .buffer = buffer, .flags = flags }, timeout, id);
+        return self.do(Send{ .fd = fd, .buffer = buffer, .flags = flags }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform an `openat(2)` and suspends
@@ -416,10 +442,10 @@ pub const AsyncIOUring = struct {
         path: [*:0]const u8,
         flags: u32,
         mode: os.mode_t,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(OpenAt{ .fd = fd, .path = path, .flags = flags, .mode = mode }, timeout, id);
+        return self.do(OpenAt{ .fd = fd, .path = path, .flags = flags, .mode = mode }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a `close(2)` and suspends
@@ -429,10 +455,10 @@ pub const AsyncIOUring = struct {
     pub fn close(
         self: *AsyncIOUring,
         fd: os.fd_t,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Close{ .fd = fd }, timeout, id);
+        return self.do(Close{ .fd = fd }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform an `fallocate(2)` and suspends
@@ -445,10 +471,10 @@ pub const AsyncIOUring = struct {
         mode: i32,
         offset: u64,
         len: u64,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Fallocate{ .fd = fd, .mode = mode, .offset = offset, .len = len }, timeout, id);
+        return self.do(Fallocate{ .fd = fd, .mode = mode, .offset = offset, .len = len }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform an `statx(2)` and suspends
@@ -462,10 +488,10 @@ pub const AsyncIOUring = struct {
         flags: u32,
         mask: u32,
         buf: *linux.Statx,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Statx{ .fd = fd, .path = path, .flags = flags, .mask = mask, .buf = buf }, timeout, id);
+        return self.do(Statx{ .fd = fd, .path = path, .flags = flags, .mask = mask, .buf = buf }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a `shutdown(2)` and suspends
@@ -476,10 +502,10 @@ pub const AsyncIOUring = struct {
         self: *AsyncIOUring,
         sockfd: os.socket_t,
         how: u32,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(Shutdown{ .sockfd = sockfd, .how = how }, timeout, id);
+        return self.do(Shutdown{ .sockfd = sockfd, .how = how }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a `renameat2(2)` and suspends
@@ -493,8 +519,8 @@ pub const AsyncIOUring = struct {
         new_dir_fd: os.fd_t,
         new_path: [*:0]const u8,
         flags: u32,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
         return self.do(RenameAt{
             .old_dir_fd = old_dir_fd,
@@ -502,7 +528,7 @@ pub const AsyncIOUring = struct {
             .new_dir_fd = new_dir_fd,
             .new_path = new_path,
             .flags = flags,
-        }, timeout, id);
+        }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a `unlinkat(2)` and suspends
@@ -514,10 +540,10 @@ pub const AsyncIOUring = struct {
         dir_fd: os.fd_t,
         path: [*:0]const u8,
         flags: u32,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(UnlinkAt{ .dir_fd = dir_fd, .path = path, .flags = flags }, timeout, id);
+        return self.do(UnlinkAt{ .dir_fd = dir_fd, .path = path, .flags = flags }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a `mkdirat(2)` and suspends
@@ -529,10 +555,10 @@ pub const AsyncIOUring = struct {
         dir_fd: os.fd_t,
         path: [*:0]const u8,
         mode: os.mode_t,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(MkdirAt{ .dir_fd = dir_fd, .path = path, .mode = mode }, timeout, id);
+        return self.do(MkdirAt{ .dir_fd = dir_fd, .path = path, .mode = mode }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a `symlinkat(2)` and suspends
@@ -544,10 +570,10 @@ pub const AsyncIOUring = struct {
         target: [*:0]const u8,
         new_dir_fd: os.fd_t,
         link_path: [*:0]const u8,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
-        return self.do(SymlinkAt{ .target = target, .new_dir_fd = new_dir_fd, .link_path = link_path }, timeout, id);
+        return self.do(SymlinkAt{ .target = target, .new_dir_fd = new_dir_fd, .link_path = link_path }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform a `linkat(2)` and suspends
@@ -561,8 +587,8 @@ pub const AsyncIOUring = struct {
         new_dir_fd: os.fd_t,
         new_path: [*:0]const u8,
         flags: u32,
-        timeout: ?Timeout,
-        id: ?*usize,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*usize,
     ) !linux.io_uring_cqe {
         return self.do(LinkAt{
             .old_dir_fd = old_dir_fd,
@@ -570,7 +596,7 @@ pub const AsyncIOUring = struct {
             .new_dir_fd = new_dir_fd,
             .new_path = new_path,
             .flags = flags,
-        }, timeout, id);
+        }, maybe_timeout, maybe_id);
     }
 };
 
@@ -1368,6 +1394,28 @@ pub const Cancel = struct {
 
     pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
         return ring.cancel(user_data, op.cancel_user_data, op.flags);
+    }
+};
+
+// TODO: Rename after adding scope for operations.
+pub const TimeOut = struct {
+    ts: *const os.linux.kernel_timespec,
+    count: u32,
+    flags: u32,
+
+    pub fn convertError(linux_err: os.E) anyerror {
+        return switch (linux_err) {
+            // TODO Convert ETIME to success.
+            else => |err| return defaultConvertError(err),
+        };
+    }
+
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
+    pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.timeout(user_data, op.ts, op.count, op.flags);
     }
 };
 
