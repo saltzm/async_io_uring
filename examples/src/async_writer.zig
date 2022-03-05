@@ -26,7 +26,7 @@ pub const AsyncWriter = struct {
 const AsyncWriterContext = struct { ring: *AsyncIOUring, fd: os.fd_t };
 
 fn asyncWrite(context: AsyncWriterContext, buffer: []const u8) !usize {
-    const cqe = try context.ring.write(context.fd, buffer, 0);
+    const cqe = try context.ring.write(context.fd, buffer, 0, null, null);
     return @intCast(usize, cqe.res);
 }
 
