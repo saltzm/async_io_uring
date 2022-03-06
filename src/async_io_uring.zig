@@ -137,7 +137,7 @@ pub const AsyncIOUring = struct {
         self: *AsyncIOUring,
         op: anytype,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         var node = ResumeNode{ .frame = @frame(), .result = undefined };
 
@@ -210,7 +210,7 @@ pub const AsyncIOUring = struct {
         operation_id: u64,
         flags: u32,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(Cancel{ .cancel_user_data = operation_id, .flags = flags }, maybe_timeout, maybe_id);
     }
@@ -236,7 +236,7 @@ pub const AsyncIOUring = struct {
         count: u32,
         flags: u32,
         // Note that there's no ability to add a "timeout" to a timeout because that wouldn't make sense.
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(TimeOut{ .ts = ts, .count = count, .flags = flags }, null, maybe_id);
     }
@@ -250,7 +250,7 @@ pub const AsyncIOUring = struct {
         fd: os.fd_t,
         flags: u32,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(Fsync{ .fd = fd, .flags = flags }, maybe_timeout, maybe_id);
     }
@@ -262,7 +262,7 @@ pub const AsyncIOUring = struct {
     pub fn nop(
         self: *AsyncIOUring,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(Nop{}, maybe_timeout, maybe_id);
     }
@@ -277,7 +277,7 @@ pub const AsyncIOUring = struct {
         buffer: []u8,
         offset: u64,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(Read{ .fd = fd, .buffer = buffer, .offset = offset }, maybe_timeout, maybe_id);
     }
@@ -292,7 +292,7 @@ pub const AsyncIOUring = struct {
         buffer: []const u8,
         offset: u64,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(Write{ .fd = fd, .buffer = buffer, .offset = offset }, maybe_timeout, maybe_id);
     }
@@ -307,7 +307,7 @@ pub const AsyncIOUring = struct {
         iovecs: []const os.iovec,
         offset: u64,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(ReadV{ .fd = fd, .iovecs = iovecs, .offset = offset }, maybe_timeout, maybe_id);
     }
@@ -323,7 +323,7 @@ pub const AsyncIOUring = struct {
         offset: u64,
         buffer_index: u16,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(ReadFixed{ .fd = fd, .buffer = buffer, .offset = offset, .buffer_index = buffer_index }, maybe_timeout, maybe_id);
     }
@@ -338,7 +338,7 @@ pub const AsyncIOUring = struct {
         iovecs: []const os.iovec_const,
         offset: u64,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(WriteV{ .fd = fd, .iovecs = iovecs, .offset = offset }, maybe_timeout, maybe_id);
     }
@@ -354,7 +354,7 @@ pub const AsyncIOUring = struct {
         offset: u64,
         buffer_index: u16,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(WriteFixed{ .fd = fd, .buffer = buffer, .offset = offset, .buffer_index = buffer_index }, maybe_timeout, maybe_id);
     }
@@ -370,7 +370,7 @@ pub const AsyncIOUring = struct {
         addrlen: *os.socklen_t,
         flags: u32,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(Accept{ .fd = fd, .addr = addr, .addrlen = addrlen, .flags = flags }, maybe_timeout, maybe_id);
     }
@@ -385,7 +385,7 @@ pub const AsyncIOUring = struct {
         addr: *const os.sockaddr,
         addrlen: os.socklen_t,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(Connect{ .fd = fd, .addr = addr, .addrlen = addrlen }, maybe_timeout, maybe_id);
     }
@@ -401,7 +401,7 @@ pub const AsyncIOUring = struct {
         op: u32,
         ev: ?*linux.epoll_event,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(EpollCtl{ .epfd = epfd, .fd = fd, .op = op, .ev = ev }, maybe_timeout, maybe_id);
     }
@@ -416,7 +416,7 @@ pub const AsyncIOUring = struct {
         buffer: []u8,
         flags: u32,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(Recv{ .fd = fd, .buffer = buffer, .flags = flags }, maybe_timeout, maybe_id);
     }
@@ -431,7 +431,7 @@ pub const AsyncIOUring = struct {
         buffer: []const u8,
         flags: u32,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(Send{ .fd = fd, .buffer = buffer, .flags = flags }, maybe_timeout, maybe_id);
     }
@@ -447,7 +447,7 @@ pub const AsyncIOUring = struct {
         flags: u32,
         mode: os.mode_t,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(OpenAt{ .fd = fd, .path = path, .flags = flags, .mode = mode }, maybe_timeout, maybe_id);
     }
@@ -460,7 +460,7 @@ pub const AsyncIOUring = struct {
         self: *AsyncIOUring,
         fd: os.fd_t,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(Close{ .fd = fd }, maybe_timeout, maybe_id);
     }
@@ -476,7 +476,7 @@ pub const AsyncIOUring = struct {
         offset: u64,
         len: u64,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(Fallocate{ .fd = fd, .mode = mode, .offset = offset, .len = len }, maybe_timeout, maybe_id);
     }
@@ -493,7 +493,7 @@ pub const AsyncIOUring = struct {
         mask: u32,
         buf: *linux.Statx,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(Statx{ .fd = fd, .path = path, .flags = flags, .mask = mask, .buf = buf }, maybe_timeout, maybe_id);
     }
@@ -507,7 +507,7 @@ pub const AsyncIOUring = struct {
         sockfd: os.socket_t,
         how: u32,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(Shutdown{ .sockfd = sockfd, .how = how }, maybe_timeout, maybe_id);
     }
@@ -524,7 +524,7 @@ pub const AsyncIOUring = struct {
         new_path: [*:0]const u8,
         flags: u32,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(RenameAt{
             .old_dir_fd = old_dir_fd,
@@ -545,7 +545,7 @@ pub const AsyncIOUring = struct {
         path: [*:0]const u8,
         flags: u32,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(UnlinkAt{ .dir_fd = dir_fd, .path = path, .flags = flags }, maybe_timeout, maybe_id);
     }
@@ -560,7 +560,7 @@ pub const AsyncIOUring = struct {
         path: [*:0]const u8,
         mode: os.mode_t,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(MkdirAt{ .dir_fd = dir_fd, .path = path, .mode = mode }, maybe_timeout, maybe_id);
     }
@@ -575,7 +575,7 @@ pub const AsyncIOUring = struct {
         new_dir_fd: os.fd_t,
         link_path: [*:0]const u8,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(SymlinkAt{ .target = target, .new_dir_fd = new_dir_fd, .link_path = link_path }, maybe_timeout, maybe_id);
     }
@@ -592,7 +592,7 @@ pub const AsyncIOUring = struct {
         new_path: [*:0]const u8,
         flags: u32,
         maybe_timeout: ?Timeout,
-        maybe_id: ?*usize,
+        maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(LinkAt{
             .old_dir_fd = old_dir_fd,
@@ -1809,7 +1809,7 @@ test "read with timeout returns cancelled with only 1 submission queue entry fre
 fn testReadThatIsCancelled(ring: *AsyncIOUring) !void {
     var read_buffer = [_]u8{0} ** 20;
 
-    var op_id: usize = undefined;
+    var op_id: u64 = undefined;
 
     // Try to read from stdin - there won't be any input so this operation should
     // reliably hang until cancellation.
@@ -1890,6 +1890,35 @@ test "timeout for short timeout returns success" {
     var async_ring = AsyncIOUring{ .ring = &ring };
 
     var cancel_frame = async testShortTimeout(&async_ring);
+
+    try async_ring.run_event_loop();
+
+    try nosuspend await cancel_frame;
+}
+
+pub fn testLongTimeout(ring: *AsyncIOUring) !void {
+    const ts = os.linux.kernel_timespec{ .tv_sec = 100000, .tv_nsec = 0 };
+    var op_id: u64 = undefined;
+    var timeout_frame = async ring.timeout(&ts, 0, 0, &op_id);
+
+    _ = try ring.cancel(op_id, 0, null, null);
+    const timeout_cqe_or_error = await timeout_frame;
+
+    try std.testing.expectEqual(timeout_cqe_or_error, error.Cancelled);
+}
+
+test "timeout with long timeout returns error.Cancelled when cancelled" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var ring = IO_Uring.init(2, 0) catch |err| switch (err) {
+        error.SystemOutdated => return error.SkipZigTest,
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer ring.deinit();
+    var async_ring = AsyncIOUring{ .ring = &ring };
+
+    var cancel_frame = async testLongTimeout(&async_ring);
 
     try async_ring.run_event_loop();
 
