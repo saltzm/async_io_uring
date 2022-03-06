@@ -43,6 +43,7 @@ const IO_Uring = linux.IO_Uring;
 ///       user_data from poll_add (30 min - 1 hr)
 ///     * Constrain the error set of `do` so that individual operations can
 ///       constrain their own error sets.
+///     * Possibly rename id to user_data to match IO_Uring?
 pub const AsyncIOUring = struct {
     /// Users may access this field directly to call functions on the IO_Uring
     /// which do not require use of the submission queue, such as register_files
@@ -219,26 +220,38 @@ pub const AsyncIOUring = struct {
     /// suspends until the operation has been completed.
     ///
     /// Returns the CQE for the operation.
-    ///
-    /// The timeout will complete when either the timeout expires, or after the specified number of
-    /// events complete (if `count` is greater than `0`).
-    ///
-    /// `flags` may be `0` for a relative timeout, or `IORING_TIMEOUT_ABS` for an absolute timeout.
-    ///
-    /// The completion event result will be `-ETIME` if the timeout completed through expiration,
-    /// `0` if the timeout completed after the specified number of events, or `-ECANCELED` if the
-    /// timeout was removed before it expired.
-    ///
-    /// io_uring timeouts use the `CLOCK.MONOTONIC` clock source.
     pub fn timeout(
         self: *AsyncIOUring,
         ts: *const os.linux.kernel_timespec,
         count: u32,
         flags: u32,
-        // Note that there's no ability to add a "timeout" to a timeout because that wouldn't make sense.
+        // Note that there's no ability to add a "timeout" to a timeout because
+        // that wouldn't make sense.
         maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
         return self.do(TimeOut{ .ts = ts, .count = count, .flags = flags }, null, maybe_id);
+    }
+
+    /// Queues (but does not submit) an SQE to remove an existing timeout
+    /// operation and suspends until the operation has been completed.
+    ///
+    /// The timeout is identified by its `id`.
+    ///
+    /// Returns the CQE for the operation if removing the timeout was
+    /// successful. Otherwise returns an error (see TimeoutRemove.convertError
+    /// for possible errors).
+    pub fn timeout_remove(
+        self: *AsyncIOUring,
+        timeout_id: u64,
+        flags: u32,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*u64,
+    ) !linux.io_uring_cqe {
+        return self.do(
+            TimeoutRemove{ .timeout_user_data = timeout_id, .flags = flags },
+            maybe_timeout,
+            maybe_id,
+        );
     }
 
     /// Queues (but does not submit) an SQE to perform an `fsync(2)` and
@@ -1423,6 +1436,27 @@ pub const TimeOut = struct {
     }
 };
 
+pub const TimeoutRemove = struct {
+    timeout_user_data: u64,
+    flags: u32,
+
+    pub fn convertError(linux_err: os.E) ?anyerror {
+        return switch (linux_err) {
+            .BUSY => error.OperationAlreadyInProgress,
+            .NOENT => error.OperationNotFound,
+            else => |err| return defaultConvertError(err),
+        };
+    }
+
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
+    pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.timeout_remove(user_data, op.timeout_user_data, op.flags);
+    }
+};
+
 pub const Nop = struct {
     const Error = DefaultError;
 
@@ -1896,7 +1930,7 @@ test "timeout for short timeout returns success" {
     try nosuspend await cancel_frame;
 }
 
-pub fn testLongTimeout(ring: *AsyncIOUring) !void {
+pub fn testLongTimeoutCancelled(ring: *AsyncIOUring) !void {
     const ts = os.linux.kernel_timespec{ .tv_sec = 100000, .tv_nsec = 0 };
     var op_id: u64 = undefined;
     var timeout_frame = async ring.timeout(&ts, 0, 0, &op_id);
@@ -1918,7 +1952,110 @@ test "timeout with long timeout returns error.Cancelled when cancelled" {
     defer ring.deinit();
     var async_ring = AsyncIOUring{ .ring = &ring };
 
-    var cancel_frame = async testLongTimeout(&async_ring);
+    var cancel_frame = async testLongTimeoutCancelled(&async_ring);
+
+    try async_ring.run_event_loop();
+
+    try nosuspend await cancel_frame;
+}
+
+pub fn testLongTimeoutRemovedWithTimeoutRemove(ring: *AsyncIOUring) !void {
+    const ts = os.linux.kernel_timespec{ .tv_sec = 100000, .tv_nsec = 0 };
+    var op_id: u64 = undefined;
+    var timeout_frame = async ring.timeout(&ts, 0, 0, &op_id);
+
+    _ = try ring.timeout_remove(op_id, 0, null, null);
+    const timeout_cqe_or_error = await timeout_frame;
+
+    try std.testing.expectEqual(timeout_cqe_or_error, error.Cancelled);
+}
+
+test "timeout with long timeout returns error.Cancelled when removed with timeout_remove" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var ring = IO_Uring.init(2, 0) catch |err| switch (err) {
+        error.SystemOutdated => return error.SkipZigTest,
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer ring.deinit();
+    var async_ring = AsyncIOUring{ .ring = &ring };
+
+    var cancel_frame = async testLongTimeoutRemovedWithTimeoutRemove(&async_ring);
+
+    try async_ring.run_event_loop();
+
+    try nosuspend await cancel_frame;
+}
+
+pub fn testTimeoutRemoveCanUpdateTimeout(ring: *AsyncIOUring) !void {
+    const ts = os.linux.kernel_timespec{ .tv_sec = 100000, .tv_nsec = 0 };
+    var op_id: u64 = undefined;
+    // Make a long timeout.
+    var timeout_frame = async ring.timeout(&ts, 0, 0, &op_id);
+
+    const UpdateTimeout = struct {
+        timeout_user_data: u64,
+        updated_ts: *const os.linux.kernel_timespec,
+
+        const convertError = TimeoutRemove.convertError;
+
+        pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+            return 1;
+        }
+
+        pub fn submit(op: @This(), r: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+            // TODO: Create issue to add this to IO_Uring and then add it.
+            const IORING_TIMEOUT_UPDATE = 1 << 1;
+            var timeout_remove_op = TimeoutRemove{
+                .timeout_user_data = op.timeout_user_data,
+                .flags = IORING_TIMEOUT_UPDATE,
+            };
+
+            var sqe = try timeout_remove_op.submit(r, user_data);
+            // `off` is the `addr2` field, which is required to store a pointer
+            // to the timespec for the new timeout.
+            //
+            // See docs under IORING_TIMEOUT_REMOVE for details.
+            //
+            // https://man.archlinux.org/man/io_uring_enter.2.en
+            sqe.off = @ptrToInt(op.updated_ts);
+            return sqe;
+        }
+    };
+
+    const short_ts = os.linux.kernel_timespec{ .tv_sec = 0, .tv_nsec = 10000 };
+    // Update to have a shorter timeout.
+    const update_cqe = try ring.do(
+        UpdateTimeout{ .timeout_user_data = op_id, .updated_ts = &short_ts },
+        null,
+        null,
+    );
+
+    try std.testing.expectEqual(update_cqe.res, 0);
+
+    // Wait for original timeout operation to complete. If update succeeded,
+    // this should happen quickly - otherwise it will take a very long time.
+    const timeout_cqe = try await timeout_frame;
+
+    // If we made it here then it means the timeout expired as expected - the
+    // following check is kind of superfluous but nice to make sure things are
+    // working as expected.
+    try std.testing.expectEqual(timeout_cqe.res, -@intCast(i32, @enumToInt(os.E.TIME)));
+}
+
+test "timeout_remove can update timeout" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var ring = IO_Uring.init(2, 0) catch |err| switch (err) {
+        error.SystemOutdated => return error.SkipZigTest,
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer ring.deinit();
+    var async_ring = AsyncIOUring{ .ring = &ring };
+
+    var cancel_frame = async testTimeoutRemoveCanUpdateTimeout(&async_ring);
 
     try async_ring.run_event_loop();
 
