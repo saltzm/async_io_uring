@@ -37,8 +37,6 @@ const IO_Uring = linux.IO_Uring;
 /// testReadWithManualAPIAndOverridenSubmit for an example.
 ///
 /// TODO: 
-///     * Implement or demonstrate how to mimic the behavior of timeout and
-///       timeout_remove (1 hr)
 ///     * Implement poll_add, poll_remove, poll_update - the latter two require
 ///       user_data from poll_add (30 min - 1 hr)
 ///     * Constrain the error set of `do` so that individual operations can
@@ -2056,6 +2054,49 @@ test "timeout_remove can update timeout" {
     var async_ring = AsyncIOUring{ .ring = &ring };
 
     var cancel_frame = async testTimeoutRemoveCanUpdateTimeout(&async_ring);
+
+    try async_ring.run_event_loop();
+
+    try nosuspend await cancel_frame;
+}
+
+pub fn testTimeoutRemoveForExpiredTimeout(ring: *AsyncIOUring) !void {
+    const ts = os.linux.kernel_timespec{ .tv_sec = 0, .tv_nsec = 1 };
+    var op_id: u64 = undefined;
+    var timeout_frame = async ring.timeout(&ts, 0, 0, &op_id);
+
+    // Wait for timeout to expire. This is theoretically racy but should wait
+    // long enough that it's not a problem.
+    std.os.nanosleep(0, 1000000);
+
+    // This is a bit janky but it's needed to process the timeout. The
+    // alternative would be to write the test where we block until the timeout
+    // completes before continuing but that would be both slightly unrealistic
+    // and technically not supported since you're not supposed to use op_id
+    // once you've resumed the frame for that op, since after that the same id
+    // could technically be reused (though it's unlikely).
+    var cqes: [4096]linux.io_uring_cqe = undefined;
+    _ = try ring.process_outstanding_events(cqes[0..]);
+
+    const tr_cqe_or_error = ring.timeout_remove(op_id, 0, null, null);
+    try std.testing.expectEqual(tr_cqe_or_error, error.OperationNotFound);
+    const timeout_cqe = try await timeout_frame;
+
+    try std.testing.expectEqual(timeout_cqe.res, -@intCast(i32, @enumToInt(os.E.TIME)));
+}
+
+test "timeout_remove returns OperationNotFound if timeout has already expired" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var ring = IO_Uring.init(2, 0) catch |err| switch (err) {
+        error.SystemOutdated => return error.SkipZigTest,
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer ring.deinit();
+    var async_ring = AsyncIOUring{ .ring = &ring };
+
+    var cancel_frame = async testTimeoutRemoveForExpiredTimeout(&async_ring);
 
     try async_ring.run_event_loop();
 
