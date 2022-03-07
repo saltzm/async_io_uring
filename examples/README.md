@@ -8,8 +8,6 @@ Files:
   is non-blocking except for the debug logging.
 * `src/benchmark.zig`: A silly benchmarking loop to check throughput from the
   perspective of a client sending "hello" over and over again.
-* `src/async_writer.zig`: A demo of making a utility so that you can conveniently
-  print to a file asynchronously.
 
 # Running the echo client and server
 ```sh

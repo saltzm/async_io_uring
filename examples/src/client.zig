@@ -7,7 +7,7 @@ const linux = os.linux;
 
 const io = @import("async_io_uring");
 const AsyncIOUring = io.AsyncIOUring;
-const AsyncWriter = @import("async_writer.zig").AsyncWriter;
+const AsyncWriter = io.AsyncWriter;
 
 // Echo client. Reads a string from stdin, sends it to the server, and prints
 // the response.

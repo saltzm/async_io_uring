@@ -654,14 +654,39 @@ pub const Timeout = struct {
     flags: u32,
 };
 
-const DefaultError = error{Cancelled} || std.os.UnexpectedError;
+/// An object that can be used to do async file I/O with the same syntax as
+/// `std.debug.print`.
+pub const AsyncWriter = struct {
+    const Self = @This();
 
-// Fallback error-handling for interruption/cancellation errors.
-fn defaultConvertError(linux_err: os.E) DefaultError {
-    return switch (linux_err) {
-        .INTR, .CANCELED => error.Cancelled,
-        else => |err| os.unexpectedErrno(err),
-    };
+    ring: *AsyncIOUring,
+    writer: std.io.Writer(AsyncWriterContext, ErrorSetOf(asyncWrite), asyncWrite),
+
+    /// Expects fd to be already open for appending.
+    pub fn init(ring: *AsyncIOUring, fd: os.fd_t) !AsyncWriter {
+        return AsyncWriter{ .ring = ring, .writer = asyncWriter(ring, fd) };
+    }
+
+    pub fn print(self: @This(), comptime format: []const u8, args: anytype) !void {
+        try self.writer.print(format, args);
+    }
+};
+
+const AsyncWriterContext = struct { ring: *AsyncIOUring, fd: os.fd_t };
+
+fn asyncWrite(context: AsyncWriterContext, buffer: []const u8) !usize {
+    const cqe = try context.ring.write(context.fd, buffer, 0, null, null);
+    return @intCast(usize, cqe.res);
+}
+
+/// Copied from x/net/tcp.zig
+fn ErrorSetOf(comptime Function: anytype) type {
+    return @typeInfo(@typeInfo(@TypeOf(Function)).Fn.return_type.?).ErrorUnion.error_set;
+}
+
+/// Wrap `AsyncIOUring` into `std.io.Writer`.
+fn asyncWriter(ring: *AsyncIOUring, fd: os.fd_t) std.io.Writer(AsyncWriterContext, ErrorSetOf(asyncWrite), asyncWrite) {
+    return .{ .context = .{ .ring = ring, .fd = fd } };
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -671,6 +696,16 @@ fn defaultConvertError(linux_err: os.E) DefaultError {
 // that require e.g. modification of the SQE prior to submission. See test    //
 // cases for examples.                                                        //
 ////////////////////////////////////////////////////////////////////////////////
+
+const DefaultError = error{Cancelled} || std.os.UnexpectedError;
+
+// Fallback error-handling for interruption/cancellation errors.
+fn defaultConvertError(linux_err: os.E) DefaultError {
+    return switch (linux_err) {
+        .INTR, .CANCELED => error.Cancelled,
+        else => |err| os.unexpectedErrno(err),
+    };
+}
 
 pub const Read = struct {
     fd: os.fd_t,
