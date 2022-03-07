@@ -1,5 +1,6 @@
 
 # Quick Links
+* [About](#about)
 * [Background](#background)
 * [Goals](#goals)
 * [How to use](#how-to-use)
