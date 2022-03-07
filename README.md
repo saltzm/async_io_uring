@@ -1,12 +1,13 @@
 
-# Outline
-* [About](#about)
+# Quick Links
 * [Background](#background)
 * [Goals](#goals)
 * [How to use](#how-to-use)
 * [Example usage](#example-usage)
     * [Echo client](#echo-client)
-    * [Operation cancellation](#operation cancellation)
+    * [Operation cancellation](#operation-cancellation)
+
+---
 
 # About
 
