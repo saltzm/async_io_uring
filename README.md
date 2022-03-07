@@ -107,8 +107,7 @@ const io = @import("async_io_uring");
 pub fn run_client(ring: *AsyncIOUring) !void {
     // Make a data structure that lets us do async file I/O with the same
     // syntax as `std.debug.print`.
-    var writer = AsyncWriter{ .ring = ring };
-    try writer.init(std.io.getStdErr().handle);
+    var writer = try AsyncWriter.init(ring, std.io.getStdErr().handle);
 
     // Address of the echo server.
     const address = try net.Address.parseIp4("127.0.0.1", 3131);

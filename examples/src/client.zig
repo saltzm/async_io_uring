@@ -16,9 +16,7 @@ const AsyncWriter = @import("async_writer.zig").AsyncWriter;
 // This is the data structure returned by the kernel when an io_uring event is
 // complete.
 pub fn run_client(ring: *AsyncIOUring) !void {
-    var writer = AsyncWriter{ .ring = ring };
-    // TODO: This init pattern is a little weird. Fix it.
-    try writer.init(std.io.getStdErr().handle);
+    var writer = try AsyncWriter.init(ring, std.io.getStdErr().handle);
 
     // Address of the echo server.
     const address = try net.Address.parseIp4("127.0.0.1", 3131);

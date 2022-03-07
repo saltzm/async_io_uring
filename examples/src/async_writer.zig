@@ -4,18 +4,19 @@ const IO_Uring = std.os.linux.IO_Uring;
 const os = std.os;
 const testing = std.testing;
 
-const aiou = @import("async_io_uring");
-const AsyncIOUring = aiou.AsyncIOUring;
+const io = @import("async_io_uring");
+
+const AsyncIOUring = io.AsyncIOUring;
 
 pub const AsyncWriter = struct {
     const Self = @This();
 
     ring: *AsyncIOUring,
-    writer: std.io.Writer(AsyncWriterContext, ErrorSetOf(asyncWrite), asyncWrite) = undefined,
+    writer: std.io.Writer(AsyncWriterContext, ErrorSetOf(asyncWrite), asyncWrite),
 
     /// Expects fd to be already open for appending.
-    pub fn init(self: *Self, fd: os.fd_t) !void {
-        self.writer = asyncWriter(self.ring, fd);
+    pub fn init(ring: *AsyncIOUring, fd: os.fd_t) !AsyncWriter {
+        return AsyncWriter{ .ring = ring, .writer = asyncWriter(ring, fd) };
     }
 
     pub fn print(self: @This(), comptime format: []const u8, args: anytype) !void {
@@ -30,12 +31,12 @@ fn asyncWrite(context: AsyncWriterContext, buffer: []const u8) !usize {
     return @intCast(usize, cqe.res);
 }
 
-/// TODO Copied from x/net/tcp.zig
+/// Copied from x/net/tcp.zig
 fn ErrorSetOf(comptime Function: anytype) type {
     return @typeInfo(@typeInfo(@TypeOf(Function)).Fn.return_type.?).ErrorUnion.error_set;
 }
 
-/// Wrap `tcp.Client` into `std.io.Writer`.
+/// Wrap `AsyncIOUring` into `std.io.Writer`.
 fn asyncWriter(ring: *AsyncIOUring, fd: os.fd_t) std.io.Writer(AsyncWriterContext, ErrorSetOf(asyncWrite), asyncWrite) {
     return .{ .context = .{ .ring = ring, .fd = fd } };
 }
@@ -45,7 +46,8 @@ pub fn print(ring: *AsyncIOUring, comptime format: []const u8, args: anytype) !v
     try writer.print(format, args);
 }
 
-// TODO: This isn't really a test.
+// TODO: This isn't really a test. Also it no longer runs after changing to use
+// zigmod - need to probably add something to build.zig to make it work.
 test "async writer" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
 
@@ -58,8 +60,7 @@ test "async writer" {
 
     var async_ring = AsyncIOUring{ .ring = &ring };
 
-    var logger = AsyncWriter{ .ring = &async_ring };
-    try logger.init(std.io.getStdErr().handle);
+    var logger = try AsyncWriter.init(&async_ring, std.io.getStdErr().handle);
 
     const something = 9;
     var print_frame = async logger.print("\n something: {}\n", .{something});
