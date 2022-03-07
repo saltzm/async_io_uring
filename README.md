@@ -3,7 +3,7 @@
 `AsyncIOUring` is an event loop that wraps the `IO_Uring` library with coroutines
 support.
 
-# Quick Links
+# Table of contents
 * [Overview](#overview)
 * [Background](#background)
 * [Goals](#goals)
