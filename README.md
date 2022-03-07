@@ -2,12 +2,14 @@
 # About
 
 `AsyncIOUring` is an event loop that wraps the `IO_Uring` library with coroutines
-support. Support for all `IO_Uring` operations has been implemented (with one
-intentional exception\*). It also supports adding timeouts to any operation and
-supports the ability to explicit cancel any operation.
+support. It supports all `IO_Uring` operations (with one intentional
+exception\*). It also supports adding timeouts to any operation and supports
+the ability to explicit cancel any operation.
 
 It is currently functionally complete, though there are a few `TODO`s marked in
 the source related to polishing the API. It's not used in production anywhere currently.
+
+See `src/async_io_uring.zig` for full API documentation.
 
 See the `examples` directory for an echo client and server that use the event loop.
 
