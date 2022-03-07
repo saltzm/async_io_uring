@@ -19,6 +19,16 @@ See the `examples` directory for an echo client and server that use the event lo
 
 \* If you need this for some reason, please create an issue.
 
+## Table of contents
+* [Overview](#overview)
+* [Background](#background)
+* [Goals](#goals)
+* [How to use](#how-to-use)
+* [Example usage](#example-usage)
+    * [Echo client](#echo-client)
+    * [Operation cancellation](#operation-cancellation)
+
+---
 # Background
 
 As an overview for the unfamiliar, `io_uring` is a new-ish Linux kernel feature 
