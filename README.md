@@ -20,7 +20,6 @@ See the `examples` directory for an echo client and server that use the event lo
 \* If you need this for some reason, please create an issue.
 
 ## Table of contents
-* [Overview](#overview)
 * [Background](#background)
 * [Goals](#goals)
 * [How to use](#how-to-use)
