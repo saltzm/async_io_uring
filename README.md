@@ -2,10 +2,16 @@
 # About
 
 `AsyncIOUring` is an event loop that wraps the `IO_Uring` library with coroutines
-support. It is currently relatively complete, with a few `TODO`s marked in the
-source. It's not used in production anywhere currently.
+support. Support for all `IO_Uring` operations has been implemented (with one
+intentional exception\*). It support adding timeouts to any operation and the
+ability to explicit cancel any operation.
+
+It is currently functionally complete, though there are a few `TODO`s marked in
+the source related to polishing the API. It's not used in production anywhere currently.
 
 See the `examples` directory for an echo client and server that use the event loop.
+
+\* The exception is `poll_update`. If you need this for some reason, please create an issue.
 
 # Background
 
@@ -69,6 +75,9 @@ The examples directory is structured roughly as you might structure a project
 that uses `async_io_uring`, with a working `zig.mod` file and `build.zig` that
 can serve as examples.
 
+You'll also need a Linux kernel version that supports all of the `io_uring`
+features you'd like to use. (All testing was done on version 5.13.0.)
+
 # Example usage
 
 ## Echo client
@@ -127,7 +136,7 @@ pub fn run_client(ring: *AsyncIOUring) !void {
         _ = try ring.send(server, input_buffer[0..num_bytes_read], 0, null, null);
 
         // Receive response.
-        const recv_cqe = try ring.do(io.Recv{ .fd = server, .buffer = input_buffer[0..], .flags = 0 }, null, null);
+        const recv_cqe = try ring.recv(server, input_buffer[0..], 0, null, null);
 
         const num_bytes_received = @intCast(usize, recv_cqe.res);
         try writer.print("Received: {s}\n", .{input_buffer[0..num_bytes_received]});

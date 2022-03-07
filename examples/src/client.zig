@@ -67,7 +67,7 @@ pub fn run_client(ring: *AsyncIOUring) !void {
         _ = try ring.send(server, input_buffer[0..num_bytes_read], 0, null, null);
 
         // Receive response.
-        const recv_cqe = try ring.do(io.Recv{ .fd = server, .buffer = input_buffer[0..], .flags = 0 }, null, null);
+        const recv_cqe = try ring.recv(server, input_buffer[0..], 0, null, null);
 
         const num_bytes_received = @intCast(usize, recv_cqe.res);
         try writer.print("Received: {s}\n", .{input_buffer[0..num_bytes_received]});
