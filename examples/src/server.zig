@@ -14,22 +14,25 @@ const AsyncIOUring = aiou.AsyncIOUring;
 const max_connections = 10000;
 
 pub fn main() !void {
-    const num_threads = 16;
+    const num_threads = 1;
     var threads: [num_threads]std.Thread = undefined;
-    var i: u64 = 0;
+
+    // Starts at 1 to reserve id 0 for the main thread.
+    var i: u64 = 1;
     while (i < num_threads) : (i += 1) {
-        std.debug.print("Spawning\n", .{});
+        std.debug.print("Spawning thread {}\n", .{i});
         threads[i] = try std.Thread.spawn(.{}, run_server_event_loop, .{i});
     }
 
-    i = 0;
+    std.debug.print("Starting event loop in main thread (thread 0)\n", .{});
 
-    // TODO Do this a better way.
-    while (i < num_threads) : (i += 1) {
-        std.debug.print("Joining {}\n", .{i});
-        std.Thread.join(threads[i]);
+    // Use the main thread as an event loop as well.
+    try run_server_event_loop(0);
+
+    std.debug.print("Joining all threads\n", .{});
+    for (threads) |t| {
+        std.Thread.join(t);
     }
-    // try run_server_event_loop(0);
 }
 
 pub fn run_server_event_loop(id: u64) !void {
