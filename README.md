@@ -163,7 +163,7 @@ pub fn run_client(ring: *AsyncIOUring) !void {
 ## Operation timeouts
 
 `AsyncIOUring` supports adding timeouts to all operations. Adding a timeout to
-an operaiton causes it to be cancelled after the specified timeout, returning
+an operation causes it to be cancelled after the specified timeout, returning
 an error code `error.Cancelled` if cancellation was successful.
 
 An example from the unit tests:
