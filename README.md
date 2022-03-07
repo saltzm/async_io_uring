@@ -68,7 +68,7 @@ thread.
   library looks almost identical to blocking code. In addition, operation
   timeouts and cancellation support is integrated into the API for all operations.
 * **Performant**: The library does no heap allocation and there's minimal
-  additional logic on top of `suspend`/`resume`.
+  additional logic on top of `suspend`/`resume`. 
 
 # Installation 
 
