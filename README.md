@@ -1,4 +1,11 @@
 
+# Outline
+* [About](#about)
+* [Background](#background)
+* [Goals](#goals)
+* [How to use](#how-to-use)
+* [Example usage](#example-usage)
+
 # About
 
 `AsyncIOUring` is an event loop that wraps the `IO_Uring` library with coroutines
