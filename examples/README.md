@@ -46,7 +46,4 @@ $ zig build run_server -Drelease-fast
 
 # In a separate shell
 $ zig build run_benchmark -Drelease-fast
-
-# Or for multiple client processes at once (in this case 30):
-$ for in {0..30}; do zig build run_benchmark -Drelease-fast & done;
 ```
