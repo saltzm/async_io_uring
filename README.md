@@ -25,6 +25,7 @@ See the `examples` directory for an echo client and server that use the event lo
 * [Installation](#installation)
 * [Example usage](#example-usage)
     * [Echo client](#echo-client)
+    * [Operation timeouts](#operation-cancellation)
     * [Operation cancellation](#operation-cancellation)
 
 ---
@@ -97,8 +98,8 @@ features you'd like to use. (All testing was done on version 5.13.0.)
 
 ## Echo client
 
-The following is a snippet of code from the echo client in the examples
-directory.
+Jumping right into a realistic example, the following is a snippet of code from
+the echo client in the `examples` directory:
 
 ```zig
 const io = @import("async_io_uring");
@@ -156,6 +157,30 @@ pub fn run_client(ring: *AsyncIOUring) !void {
         const num_bytes_received = @intCast(usize, recv_cqe.res);
         try writer.print("Received: {s}\n", .{input_buffer[0..num_bytes_received]});
     }
+}
+```
+
+## Operation timeouts
+
+`AsyncIOUring` supports adding timeouts to all operations. Adding a timeout to
+an operaiton causes it to be cancelled after the specified timeout, returning
+an error code `error.Cancelled` if cancellation was successful.
+
+An example from the unit tests:
+
+```zig
+fn testReadThatTimesOut(ring: *AsyncIOUring) !void {
+    var read_buffer = [_]u8{0} ** 20;
+
+    const ts = os.linux.kernel_timespec{ .tv_sec = 0, .tv_nsec = 10000 };
+    // Try to read from stdin - there won't be any input so this should
+    // reliably time out.
+    const read_cqe = ring.do(
+        Read{ .fd = std.io.getStdIn().handle, .buffer = read_buffer[0..], .offset = 0 },
+        Timeout{ .ts = &ts, .flags = 0 },
+        null,
+    );
+    try std.testing.expectEqual(read_cqe, error.Cancelled);
 }
 ```
 
