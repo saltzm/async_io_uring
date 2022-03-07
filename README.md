@@ -1,16 +1,4 @@
-
-# Quick Links
-* [About](#about)
-* [Background](#background)
-* [Goals](#goals)
-* [How to use](#how-to-use)
-* [Example usage](#example-usage)
-    * [Echo client](#echo-client)
-    * [Operation cancellation](#operation-cancellation)
-
----
-
-# About
+# Overview
 
 `AsyncIOUring` is an event loop that wraps the `IO_Uring` library with coroutines
 support. It supports all `IO_Uring` operations (with the intentional exception
@@ -29,6 +17,18 @@ See `src/async_io_uring.zig` for full API documentation.
 See the `examples` directory for an echo client and server that use the event loop.
 
 \* If you need this for some reason, please create an issue.
+
+
+# Quick Links
+* [Background](#background)
+* [Goals](#goals)
+* [How to use](#how-to-use)
+* [Example usage](#example-usage)
+    * [Echo client](#echo-client)
+    * [Operation cancellation](#operation-cancellation)
+
+---
+
 
 # Background
 
