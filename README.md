@@ -17,8 +17,9 @@ See `src/async_io_uring.zig` for full API documentation.
 
 See the `examples` directory for an echo client and server that use the event loop.
 
+\* If you need this for some reason, please create an issue.
 
-Quick links to the rest of the README:
+# Table of contents
 * [Background](#background)
 * [Goals](#goals)
 * [How to use](#how-to-use)
@@ -26,7 +27,7 @@ Quick links to the rest of the README:
     * [Echo client](#echo-client)
     * [Operation cancellation](#operation-cancellation)
 
-\* If you need this for some reason, please create an issue.
+---
 
 
 # Background
