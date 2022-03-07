@@ -2,8 +2,8 @@
 # About
 
 `AsyncIOUring` is an event loop that wraps the `IO_Uring` library with coroutines
-support. It is currently relatively complete, but has a few remaining `TODO`s
-in the source. It's not used in production anywhere currently.
+support. It is currently relatively complete, with a few `TODO`s marked in the
+source. It's not used in production anywhere currently.
 
 See the `examples` directory for an echo client and server that use the event loop.
 
@@ -71,6 +71,8 @@ can serve as examples.
 
 # Example usage
 
+## Echo client
+
 The following is a snippet of code from the echo client in the examples
 directory.
 
@@ -130,5 +132,37 @@ pub fn run_client(ring: *AsyncIOUring) !void {
         const num_bytes_received = @intCast(usize, recv_cqe.res);
         try writer.print("Received: {s}\n", .{input_buffer[0..num_bytes_received]});
     }
+}
+```
+
+## Operation cancellation
+
+`AsyncIOUring` supports cancellation for all operations. Each operation is 
+identified by an `id` that is set via a `maybe_id` "output parameter" in all
+operation submission functions (e.g. `read`, `send`, etc.). This `id` can then
+be passed to `AsyncIOUring.cancel` to cancel that operation.
+
+An example from the unit tests:
+
+```zig
+fn testReadThatIsCancelled(ring: *AsyncIOUring) !void {
+    var read_buffer = [_]u8{0} ** 20;
+
+    var op_id: u64 = undefined;
+
+    // Try to read from stdin - there won't be any input so this operation should
+    // reliably hang until cancellation.
+    var read_frame = async ring.do(
+        Read{ .fd = std.io.getStdIn().handle, .buffer = read_buffer[0..], .offset = 0 },
+        null,
+        &op_id,
+    );
+
+    const cancel_cqe = try ring.cancel(op_id, 0, null, null);
+    // Expect that cancellation succeeded.
+    try std.testing.expectEqual(cancel_cqe.res, 0);
+
+    const read_cqe = await read_frame;
+    try std.testing.expectEqual(read_cqe, error.Cancelled);
 }
 ```
