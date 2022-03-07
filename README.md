@@ -22,7 +22,7 @@ See the `examples` directory for an echo client and server that use the event lo
 ## Table of contents
 * [Background](#background)
 * [Goals](#goals)
-* [How to use](#how-to-use)
+* [How to include in your application](#how-to-include-in-your-application)
 * [Example usage](#example-usage)
     * [Echo client](#echo-client)
     * [Operation cancellation](#operation-cancellation)
@@ -69,7 +69,7 @@ thread.
 * **Performant**: The library does no heap allocation and there's minimal
   additional logic on top of `suspend`/`resume`.
 
-# How to use 
+# How to include in your application
 
 This library integrates with the [zigmod](https://github.com/nektro/zigmod)
 package manager. If you've installed `zigmod`, you can add a line like the
