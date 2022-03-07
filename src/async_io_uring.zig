@@ -37,11 +37,8 @@ const IO_Uring = linux.IO_Uring;
 /// testReadWithManualAPIAndOverridenSubmit for an example.
 ///
 /// TODO: 
-///     * Implement poll_add, poll_remove, poll_update - the latter two require
-///       user_data from poll_add (30 min - 1 hr)
 ///     * Constrain the error set of `do` so that individual operations can
 ///       constrain their own error sets.
-///     * Possibly rename id to user_data to match IO_Uring?
 pub const AsyncIOUring = struct {
     /// Users may access this field directly to call functions on the IO_Uring
     /// which do not require use of the submission queue, such as register_files
@@ -223,7 +220,7 @@ pub const AsyncIOUring = struct {
         ts: *const os.linux.kernel_timespec,
         count: u32,
         flags: u32,
-        // Note that there's no ability to add a "timeout" to a timeout because
+        // Note that there's no ability to add a timeout to a timeout because
         // that wouldn't make sense.
         maybe_id: ?*u64,
     ) !linux.io_uring_cqe {
@@ -250,6 +247,35 @@ pub const AsyncIOUring = struct {
             maybe_timeout,
             maybe_id,
         );
+    }
+
+    /// Queues (but does not submit) an SQE to perform a `poll(2)` and
+    /// suspends until the operation has been completed.
+    ///
+    /// Returns the CQE for the operation.
+    pub fn poll_add(
+        self: *AsyncIOUring,
+        fd: os.fd_t,
+        poll_mask: u32,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*u64,
+    ) !linux.io_uring_cqe {
+        return self.do(PollAdd{ .fd = fd, .poll_mask = poll_mask }, maybe_timeout, maybe_id);
+    }
+
+    /// Queues (but does not submit) an SQE to remove an existing poll
+    /// operation and suspends until the operation has been completed.
+    ///
+    /// The poll operation to be removed is identified by its `id`.
+    ///
+    /// Returns the CQE for the operation.
+    pub fn poll_remove(
+        self: *AsyncIOUring,
+        poll_id: u64,
+        maybe_timeout: ?Timeout,
+        maybe_id: ?*u64,
+    ) !linux.io_uring_cqe {
+        return self.do(PollRemove{ .poll_id = poll_id }, maybe_timeout, maybe_id);
     }
 
     /// Queues (but does not submit) an SQE to perform an `fsync(2)` and
@@ -1452,6 +1478,51 @@ pub const TimeoutRemove = struct {
 
     pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
         return ring.timeout_remove(user_data, op.timeout_user_data, op.flags);
+    }
+};
+
+pub const PollAdd = struct {
+    fd: os.fd_t,
+    poll_mask: u32,
+
+    const Error = std.os.PollError || DefaultError;
+
+    pub fn convertError(linux_err: os.E) ?Error {
+        return switch (linux_err) {
+            // Copied from std.os.poll.
+            .FAULT => unreachable,
+            .INVAL => unreachable,
+            .NOMEM => error.SystemResources,
+            else => |err| return defaultConvertError(err),
+        };
+    }
+
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
+    pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.poll_add(user_data, op.fd, op.poll_mask);
+    }
+};
+
+pub const PollRemove = struct {
+    poll_id: u64,
+
+    const Error = DefaultError;
+
+    pub fn convertError(linux_err: os.E) ?DefaultError {
+        return switch (linux_err) {
+            else => |err| return defaultConvertError(err),
+        };
+    }
+
+    pub fn getNumRequiredSubmissionQueueEntries(_: @This()) u32 {
+        return 1;
+    }
+
+    pub fn submit(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
+        return ring.poll_update(user_data, op.poll_id);
     }
 };
 
