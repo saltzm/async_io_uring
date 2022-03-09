@@ -39,7 +39,13 @@ pub fn run_client(ring: *AsyncIOUring) !void {
 
     while (num_ops < max_ops) : (num_ops += 1) {
         // Send it to the server.
-        const send_result = try ring.send(client, buffer_to_send[0..num_bytes_to_send], @intCast(u32, num_bytes_to_send), null, null);
+        const send_result = try ring.send(
+            client,
+            buffer_to_send[0..num_bytes_to_send],
+            @intCast(u32, num_bytes_to_send),
+            null,
+            null,
+        );
 
         assert(send_result.res == num_bytes_to_send);
 

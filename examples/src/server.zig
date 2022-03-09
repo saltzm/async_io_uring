@@ -1,5 +1,5 @@
 const std = @import("std");
-const aiou = @import("async_io_uring");
+const io = @import("async_io_uring");
 const IO_Uring = std.os.linux.IO_Uring;
 const assert = std.debug.assert;
 const mem = std.mem;
@@ -7,7 +7,8 @@ const net = std.net;
 const os = std.os;
 const linux = os.linux;
 
-const AsyncIOUring = aiou.AsyncIOUring;
+const AsyncIOUring = io.AsyncIOUring;
+const AsyncWriter = io.AsyncWriter;
 
 // Currently the number of max connections is hardcoded. This allows you to
 // avoid heap allocation in growing and shrinking the list of active connections.
@@ -78,15 +79,15 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t, _: u64) !void {
     var num_open_conns: usize = 0;
     var num_closed_conns: usize = 0;
 
-    while (true) {
-        // std.debug.print("Accepting\n", .{});
+    var writer = try AsyncWriter.init(ring, std.io.getStdErr().handle);
 
+    while (true) {
         var accept_addr: os.sockaddr = undefined;
         var accept_addr_len: os.socklen_t = @sizeOf(@TypeOf(accept_addr));
 
         // Wait for a new connection request.
         var accept_cqe = ring.accept(server, &accept_addr, &accept_addr_len, 0, null, null) catch |err| {
-            std.debug.print("Error in run_acceptor_loop: accept {} \n", .{err});
+            try writer.print("Error in run_acceptor_loop: accept {} \n", .{err});
             continue;
         };
 
@@ -116,7 +117,7 @@ pub fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t, _: u64) !void {
             // Spawns a new connection handler in a different coroutine.
             open_conns[idx] = async handle_connection(ring, new_conn_fd, idx, &closed_conns, &num_closed_conns);
         } else {
-            // std.debug.print("Reached connection limit, refusing connection. \n", .{});
+            try writer.print("Reached connection limit, refusing connection. \n", .{});
             _ = try ring.close(new_conn_fd, null, null);
         }
     }
@@ -148,14 +149,8 @@ pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, cl
     // Loop until the connection is closed, receiving input and sending back
     // that input as output.
     while (true) {
-        const recv_cqe = ring.recv(client, buffer[0..], 0, null, null) catch |err| {
-            std.debug.print("Error in handle_connection: recv {} \n", .{err});
-            return err;
-        };
+        const recv_cqe = try ring.recv(client, buffer[0..], 0, null, null);
         const num_bytes_received = @intCast(usize, recv_cqe.res);
-        _ = ring.send(client, buffer[0..num_bytes_received], 0, null, null) catch |err| {
-            std.debug.print("Error in handle_connection: send {} \n", .{err});
-            return err;
-        };
+        _ = try ring.send(client, buffer[0..num_bytes_received], 0, null, null);
     }
 }
