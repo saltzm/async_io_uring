@@ -19,6 +19,19 @@ pub fn main() !void {
     try runServer(num_threads, handle_connection_impl);
 }
 
+pub fn handle_connection_impl(ring: *AsyncIOUring, client: os.fd_t) !void {
+    // Used to send and receive.
+    var buffer: [512]u8 = undefined;
+
+    // Loop until the connection is closed, receiving input and sending back
+    // that input as output.
+    while (true) {
+        const recv_cqe = try ring.recv(client, buffer[0..], 0, null, null);
+        const num_bytes_received = @intCast(usize, recv_cqe.res);
+        _ = try ring.send(client, buffer[0..num_bytes_received], 0, null, null);
+    }
+}
+
 const ConnHandler = fn (*AsyncIOUring, os.fd_t) anyerror!void;
 
 fn run_server_event_loop(id: u64, comptime handleConnection: ConnHandler) !void {
@@ -68,7 +81,6 @@ pub fn runServer(
     while (i < num_threads) : (i += 1) {
         std.debug.print("Spawning thread {}\n", .{i});
 
-        //@compileLog(@typeInfo(@typeInfo(@TypeOf(run_server_event_loop)).Fn));
         const wrapper = Wrapper{ .id = i };
         threads[i] = try std.Thread.spawn(.{}, Wrapper.run, .{wrapper});
     }
@@ -87,7 +99,7 @@ pub fn runServer(
 // Open a socket and run the echo server listening on that socket. The server
 // can handle up to max_connections concurrent connections, all in a single
 // thread..
-pub fn run_server(ring: *AsyncIOUring, id: u64, comptime handleConnection: ConnHandler) !void {
+fn run_server(ring: *AsyncIOUring, id: u64, comptime handleConnection: ConnHandler) !void {
     const address = try net.Address.parseIp4("127.0.0.1", 3131);
     const kernel_backlog = 1;
     const server = try os.socket(address.any.family, os.SOCK.STREAM | os.SOCK.CLOEXEC, 0);
@@ -192,18 +204,4 @@ fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, closed
     }
 
     try await async handleConnection(ring, client);
-}
-
-pub fn handle_connection_impl(ring: *AsyncIOUring, client: os.fd_t) !void {
-
-    // Used to send and receive.
-    var buffer: [512]u8 = undefined;
-
-    // Loop until the connection is closed, receiving input and sending back
-    // that input as output.
-    while (true) {
-        const recv_cqe = try ring.recv(client, buffer[0..], 0, null, null);
-        const num_bytes_received = @intCast(usize, recv_cqe.res);
-        _ = try ring.send(client, buffer[0..num_bytes_received], 0, null, null);
-    }
 }
