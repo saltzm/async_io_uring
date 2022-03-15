@@ -15,11 +15,11 @@ const AsyncWriter = io.AsyncWriter;
 const max_connections = 10000;
 
 pub fn main() !void {
-    const num_threads = 1;
-    try runServer(num_threads, handle_connection_impl);
+    const num_threads = 16;
+    try runServer(num_threads, handleEchoClientConnection);
 }
 
-pub fn handle_connection_impl(ring: *AsyncIOUring, client: os.fd_t) !void {
+pub fn handleEchoClientConnection(ring: *AsyncIOUring, client: os.fd_t) !void {
     // Used to send and receive.
     var buffer: [512]u8 = undefined;
 
