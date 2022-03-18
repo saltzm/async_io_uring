@@ -14,7 +14,7 @@ const AsyncIOUring = aiou.AsyncIOUring;
 
 const BenchmarkResult = struct { num_ops: u64 };
 
-const max_ops = 10000;
+const max_ops = 5000;
 const buffer_to_send: [512]u8 = [_]u8{0} ** 512;
 const num_bytes_to_send = buffer_to_send.len;
 
@@ -86,7 +86,7 @@ pub fn run_benchmark_event_loop(_: u64, result: *BenchmarkResult) !void {
 }
 
 pub fn main() !void {
-    const num_threads = 16;
+    const num_threads = 4;
     var threads: [num_threads]std.Thread = undefined;
     var results: [num_threads]BenchmarkResult = undefined;
 

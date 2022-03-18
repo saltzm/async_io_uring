@@ -10,31 +10,77 @@ const linux = os.linux;
 const AsyncIOUring = io.AsyncIOUring;
 const AsyncWriter = io.AsyncWriter;
 
+// TODO: Try out using register_files for all connections and for the listener
+// connection  especially
+
 // Currently the number of max connections is hardcoded. This allows you to
 // avoid heap allocation in growing and shrinking the list of active connections.
+// TODO move this into parameter of runServer
 const max_connections = 10000;
 
 pub fn main() !void {
-    const num_threads = 16;
-    try runServer(num_threads, handleEchoClientConnection);
+    const num_threads = 1;
+    try runServer(
+        num_threads,
+        handleEchoClientConnection,
+        ServerConfig{
+            .address = try net.Address.parseIp4("127.0.0.1", 3131),
+        },
+    );
 }
 
-pub fn handleEchoClientConnection(ring: *AsyncIOUring, client: os.fd_t) !void {
+fn handleEchoClientConnection(_: ServerContext, client: TcpConnection) !void {
     // Used to send and receive.
     var buffer: [512]u8 = undefined;
 
     // Loop until the connection is closed, receiving input and sending back
     // that input as output.
     while (true) {
-        const recv_cqe = try ring.recv(client, buffer[0..], 0, null, null);
-        const num_bytes_received = @intCast(usize, recv_cqe.res);
-        _ = try ring.send(client, buffer[0..num_bytes_received], 0, null, null);
+        const num_bytes_received = try client.recv(buffer[0..], null, null);
+        _ = try client.send(buffer[0..num_bytes_received], null, null);
     }
 }
 
-const ConnHandler = fn (*AsyncIOUring, os.fd_t) anyerror!void;
+pub const ServerContext = struct {
+    thread_id: usize,
+    io_service: *AsyncIOUring,
+};
 
-fn run_server_event_loop(id: u64, comptime handleConnection: ConnHandler) !void {
+pub const ServerConfig = struct {
+    address: std.net.Address,
+    kernel_backlog: u31 = 128,
+    reuse_address: bool = false,
+};
+
+pub const TcpConnection = struct {
+    ring: *AsyncIOUring,
+    socket_fd: os.fd_t,
+
+    pub fn send(
+        self: @This(),
+        buffer: []const u8,
+        maybe_timeout: ?io.Timeout,
+        maybe_id: ?*u64,
+    ) !usize {
+        const cqe = try self.ring.send(self.socket_fd, buffer, 0, maybe_timeout, maybe_id);
+        return @intCast(usize, cqe.res);
+    }
+
+    /// Returns number of bytes received.
+    pub fn recv(
+        self: @This(),
+        buffer: []u8,
+        maybe_timeout: ?io.Timeout,
+        maybe_id: ?*u64,
+    ) !usize {
+        const cqe = try self.ring.recv(self.socket_fd, buffer, 0, maybe_timeout, maybe_id);
+        return @intCast(usize, cqe.res);
+    }
+};
+
+const ConnHandler = fn (ServerContext, TcpConnection) anyerror!void;
+
+fn runServerEventLoop(id: u64, server_config: ServerConfig, comptime handleConnection: ConnHandler) !void {
     var ring = try IO_Uring.init(4096, 0);
     defer ring.deinit();
 
@@ -43,9 +89,10 @@ fn run_server_event_loop(id: u64, comptime handleConnection: ConnHandler) !void 
     const Wrapper = struct {
         ring: *AsyncIOUring,
         id: u64,
+        server_config: ServerConfig,
 
         fn run(self: @This()) !void {
-            try run_server(self.ring, self.id, handleConnection);
+            try runServerSingleThreaded(self.ring, self.id, self.server_config, handleConnection);
         }
     };
 
@@ -55,7 +102,11 @@ fn run_server_event_loop(id: u64, comptime handleConnection: ConnHandler) !void 
     // makes sense because we're only doing it once).
     const frame = try std.heap.page_allocator.create(@Frame(Wrapper.run));
     defer std.heap.page_allocator.destroy(frame);
-    const wrapper = Wrapper{ .ring = &async_ring, .id = id };
+    const wrapper = Wrapper{
+        .ring = &async_ring,
+        .id = id,
+        .server_config = server_config,
+    };
     frame.* = async wrapper.run();
 
     try async_ring.run_event_loop();
@@ -65,14 +116,16 @@ fn run_server_event_loop(id: u64, comptime handleConnection: ConnHandler) !void 
 pub fn runServer(
     comptime num_threads: usize,
     comptime handleConnection: ConnHandler,
+    server_config: ServerConfig,
 ) !void {
     var threads: [num_threads]std.Thread = undefined;
 
     const Wrapper = struct {
         id: u64,
+        server_config: ServerConfig,
 
         fn run(self: @This()) !void {
-            try run_server_event_loop(self.id, handleConnection);
+            try runServerEventLoop(self.id, self.server_config, handleConnection);
         }
     };
 
@@ -81,15 +134,14 @@ pub fn runServer(
     while (i < num_threads) : (i += 1) {
         std.debug.print("Spawning thread {}\n", .{i});
 
-        const wrapper = Wrapper{ .id = i };
+        const wrapper = Wrapper{ .id = i, .server_config = server_config };
         threads[i] = try std.Thread.spawn(.{}, Wrapper.run, .{wrapper});
     }
 
     std.debug.print("Starting event loop in main thread (thread 0)\n", .{});
 
     // Use the main thread as an event loop as well.
-    try run_server_event_loop(0, handleConnection);
-
+    try runServerEventLoop(0, server_config, handleConnection);
     std.debug.print("Joining all threads\n", .{});
     for (threads) |t| {
         std.Thread.join(t);
@@ -99,30 +151,35 @@ pub fn runServer(
 // Open a socket and run the echo server listening on that socket. The server
 // can handle up to max_connections concurrent connections, all in a single
 // thread..
-fn run_server(ring: *AsyncIOUring, id: u64, comptime handleConnection: ConnHandler) !void {
-    const address = try net.Address.parseIp4("127.0.0.1", 3131);
-    const kernel_backlog = 1;
-    const server = try os.socket(address.any.family, os.SOCK.STREAM | os.SOCK.CLOEXEC, 0);
+fn runServerSingleThreaded(
+    ring: *AsyncIOUring,
+    id: u64,
+    server_config: ServerConfig,
+    comptime handleConnection: ConnHandler,
+) !void {
+    // TODO: Experiment with NONBLOCK
+    const server = try os.socket(server_config.address.any.family, os.SOCK.STREAM | os.SOCK.CLOEXEC, 0);
     defer os.close(server);
     try os.setsockopt(server, os.SOL.SOCKET, os.SO.REUSEPORT, &mem.toBytes(@as(c_int, 1)));
-    try os.bind(server, &address.any, address.getOsSockLen());
-    try os.listen(server, kernel_backlog);
+    try os.bind(server, &server_config.address.any, server_config.address.getOsSockLen());
+    try os.listen(server, server_config.kernel_backlog);
 
-    try run_acceptor_loop(ring, server, id, handleConnection);
+    try runAcceptorLoop(ring, server, id, handleConnection);
 }
 
 // Loops accepting new connections and spawning new coroutines to handle those
 // connections.
-fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t, _: u64, comptime handleConnection: ConnHandler) !void {
+fn runAcceptorLoop(ring: *AsyncIOUring, server: os.fd_t, thread_id: u64, comptime handleConnection: ConnHandler) !void {
     const Wrapper = struct {
         ring: *AsyncIOUring,
+        thread_id: usize,
         client: os.fd_t,
         conn_idx: u64,
         closed_conns: *[max_connections]u64,
         num_closed_conns: *usize,
 
         fn run(self: @This()) !void {
-            try handle_connection(self.ring, self.client, self.conn_idx, self.closed_conns, self.num_closed_conns, handleConnection);
+            try handle_connection(self.ring, self.thread_id, self.client, self.conn_idx, self.closed_conns, self.num_closed_conns, handleConnection);
         }
     };
     // TODO: Put this in a struct and abstract away some of the connection
@@ -139,8 +196,15 @@ fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t, _: u64, comptime hand
         var accept_addr_len: os.socklen_t = @sizeOf(@TypeOf(accept_addr));
 
         // Wait for a new connection request.
-        var accept_cqe = ring.accept(server, &accept_addr, &accept_addr_len, 0, null, null) catch |err| {
-            try writer.print("Error in run_acceptor_loop: accept {} \n", .{err});
+        var accept_cqe = ring.accept(
+            server,
+            &accept_addr,
+            &accept_addr_len,
+            0,
+            null,
+            null,
+        ) catch |err| {
+            try writer.print("Error accepting connection: {} \n", .{err});
             continue;
         };
 
@@ -168,6 +232,7 @@ fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t, _: u64, comptime hand
         if (this_conn_idx) |idx| {
             const wrapper = Wrapper{
                 .ring = ring,
+                .thread_id = thread_id,
                 .client = new_conn_fd,
                 .conn_idx = idx,
                 .closed_conns = &closed_conns,
@@ -191,7 +256,7 @@ fn run_acceptor_loop(ring: *AsyncIOUring, server: os.fd_t, _: u64, comptime hand
 
 // Does the main echo server loop for a single connection, recieving and
 // echoing input over the file descriptor for the client.
-fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, closed_conns: *[max_connections]u64, num_closed_conns: *usize, comptime handleConnection: ConnHandler) !void {
+fn handle_connection(ring: *AsyncIOUring, thread_id: usize, client: os.fd_t, conn_idx: u64, closed_conns: *[max_connections]u64, num_closed_conns: *usize, comptime handleConnection: ConnHandler) !void {
     defer {
         // std.debug.print("Closing connection with index {}\n", .{conn_idx});
         _ = ring.close(client, null, null) catch |err| {
@@ -203,5 +268,5 @@ fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, closed
         num_closed_conns.* += 1;
     }
 
-    try await async handleConnection(ring, client);
+    try await async handleConnection(ServerContext{ .thread_id = thread_id, .io_service = ring }, TcpConnection{ .ring = ring, .socket_fd = client });
 }
