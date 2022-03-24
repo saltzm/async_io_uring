@@ -319,5 +319,8 @@ fn handle_connection(
         num_closed_conns.* += 1;
     }
 
-    try await async handleConnection(ServerContext{ .thread_id = thread_id, .io_service = ring, .logger = writer }, TcpConnection{ .ring = ring, .socket_fd = client });
+    try await async handleConnection(
+        ServerContext{ .thread_id = thread_id, .io_service = ring, .logger = writer },
+        TcpConnection{ .ring = ring, .socket_fd = client },
+    );
 }
