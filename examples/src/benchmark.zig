@@ -21,10 +21,6 @@ const num_bytes_to_send = buffer_to_send.len;
 pub fn run_client(ring: *AsyncIOUring) !void {
     const address = try net.Address.parseIp4("127.0.0.1", 3131);
     const client = try os.socket(address.any.family, os.SOCK.STREAM | os.SOCK.CLOEXEC, 0);
-    defer os.close(client);
-
-    // Connect to the server.
-    const cqe_connect = try ring.connect(client, &address.any, address.getOsSockLen(), null, null);
     defer {
         _ = ring.close(client, null, null) catch {
             std.debug.print("Error closing\n", .{});
@@ -32,6 +28,8 @@ pub fn run_client(ring: *AsyncIOUring) !void {
         };
     }
 
+    // Connect to the server.
+    const cqe_connect = try ring.connect(client, &address.any, address.getOsSockLen(), null, null);
     assert(cqe_connect.res == 0);
 
     var input_buffer: [512]u8 = undefined;
