@@ -151,6 +151,11 @@ pub fn handle_connection(ring: *AsyncIOUring, client: os.fd_t, conn_idx: u64, cl
     while (true) {
         const recv_cqe = try ring.recv(client, buffer[0..], 0, null, null);
         const num_bytes_received = @intCast(usize, recv_cqe.res);
+        if (num_bytes_received == 0) {
+            // 0 bytes received indicates orderly connection closure.
+            break;
+        }
+
         _ = try ring.send(client, buffer[0..num_bytes_received], 0, null, null);
     }
 }
