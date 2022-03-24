@@ -15,13 +15,16 @@ const AsyncWriter = io.AsyncWriter;
 
 // Currently the number of max connections is hardcoded. This allows you to
 // avoid heap allocation in growing and shrinking the list of active connections.
-// TODO move this into parameter of runServer
-const max_connections = 10000;
 
 pub fn main() !void {
+    // TODO: May need to allocate the array of threads on the heap so you can
+    // do this. O
+    // const num_threads = comptime try std.Thread.getCpuCount();
     const num_threads = 1;
+    const max_num_connections = 10000;
     try runServer(
         num_threads,
+        max_num_connections,
         handleEchoClientConnection,
         ServerConfig{
             .address = try net.Address.parseIp4("127.0.0.1", 3131),
@@ -29,21 +32,45 @@ pub fn main() !void {
     );
 }
 
-fn handleEchoClientConnection(_: ServerContext, client: TcpConnection) !void {
+fn handleEchoClientConnection(serverCtx: ServerContext, client: TcpConnection) !void {
     // Used to send and receive.
     var buffer: [512]u8 = undefined;
+
+    // TODO why does this appear racy
+    try serverCtx.logger.print(
+        "Accepted new connection on thread {}\n",
+        .{serverCtx.thread_id},
+    );
+
+    var num_msgs_received: u64 = 0;
+
+    defer {
+        serverCtx.logger.print(
+            "\nFinished with connection on thread {}, received {} messages\n",
+            .{ serverCtx.thread_id, num_msgs_received },
+        ) catch |err| {
+            std.debug.print("Error logging connection closure: {}\n", .{err});
+            std.os.exit(1);
+        };
+    }
 
     // Loop until the connection is closed, receiving input and sending back
     // that input as output.
     while (true) {
         const num_bytes_received = try client.recv(buffer[0..], null, null);
+        if (num_bytes_received == 0) {
+            // 0 bytes received indicates orderly connection closure.
+            break;
+        }
         _ = try client.send(buffer[0..num_bytes_received], null, null);
+        num_msgs_received += 1;
     }
 }
 
 pub const ServerContext = struct {
     thread_id: usize,
     io_service: *AsyncIOUring,
+    logger: *AsyncWriter,
 };
 
 pub const ServerConfig = struct {
@@ -80,7 +107,7 @@ pub const TcpConnection = struct {
 
 const ConnHandler = fn (ServerContext, TcpConnection) anyerror!void;
 
-fn runServerEventLoop(id: u64, server_config: ServerConfig, comptime handleConnection: ConnHandler) !void {
+fn runServerEventLoop(id: u64, server_config: ServerConfig, comptime max_num_connections: usize, comptime handleConnection: ConnHandler) !void {
     var ring = try IO_Uring.init(4096, 0);
     defer ring.deinit();
 
@@ -92,7 +119,7 @@ fn runServerEventLoop(id: u64, server_config: ServerConfig, comptime handleConne
         server_config: ServerConfig,
 
         fn run(self: @This()) !void {
-            try runServerSingleThreaded(self.ring, self.id, self.server_config, handleConnection);
+            try runServerSingleThreaded(self.ring, self.id, self.server_config, max_num_connections, handleConnection);
         }
     };
 
@@ -115,6 +142,7 @@ fn runServerEventLoop(id: u64, server_config: ServerConfig, comptime handleConne
 
 pub fn runServer(
     comptime num_threads: usize,
+    comptime max_num_connections: usize,
     comptime handleConnection: ConnHandler,
     server_config: ServerConfig,
 ) !void {
@@ -125,7 +153,7 @@ pub fn runServer(
         server_config: ServerConfig,
 
         fn run(self: @This()) !void {
-            try runServerEventLoop(self.id, self.server_config, handleConnection);
+            try runServerEventLoop(self.id, self.server_config, max_num_connections, handleConnection);
         }
     };
 
@@ -141,7 +169,7 @@ pub fn runServer(
     std.debug.print("Starting event loop in main thread (thread 0)\n", .{});
 
     // Use the main thread as an event loop as well.
-    try runServerEventLoop(0, server_config, handleConnection);
+    try runServerEventLoop(0, server_config, max_num_connections, handleConnection);
     std.debug.print("Joining all threads\n", .{});
     for (threads) |t| {
         std.Thread.join(t);
@@ -149,12 +177,13 @@ pub fn runServer(
 }
 
 // Open a socket and run the echo server listening on that socket. The server
-// can handle up to max_connections concurrent connections, all in a single
+// can handle up to max_num_connections concurrent connections, all in a single
 // thread..
 fn runServerSingleThreaded(
     ring: *AsyncIOUring,
     id: u64,
     server_config: ServerConfig,
+    comptime max_num_connections: usize,
     comptime handleConnection: ConnHandler,
 ) !void {
     // TODO: Experiment with NONBLOCK
@@ -164,28 +193,39 @@ fn runServerSingleThreaded(
     try os.bind(server, &server_config.address.any, server_config.address.getOsSockLen());
     try os.listen(server, server_config.kernel_backlog);
 
-    try runAcceptorLoop(ring, server, id, handleConnection);
+    try runAcceptorLoop(ring, server, id, max_num_connections, handleConnection);
 }
 
 // Loops accepting new connections and spawning new coroutines to handle those
 // connections.
-fn runAcceptorLoop(ring: *AsyncIOUring, server: os.fd_t, thread_id: u64, comptime handleConnection: ConnHandler) !void {
+fn runAcceptorLoop(ring: *AsyncIOUring, server: os.fd_t, thread_id: u64, comptime max_num_connections: usize, comptime handleConnection: ConnHandler) !void {
     const Wrapper = struct {
         ring: *AsyncIOUring,
+        writer: *AsyncWriter,
         thread_id: usize,
         client: os.fd_t,
         conn_idx: u64,
-        closed_conns: *[max_connections]u64,
+        closed_conns: *[max_num_connections]u64,
         num_closed_conns: *usize,
 
         fn run(self: @This()) !void {
-            try handle_connection(self.ring, self.thread_id, self.client, self.conn_idx, self.closed_conns, self.num_closed_conns, handleConnection);
+            try handle_connection(
+                self.ring,
+                self.writer,
+                self.thread_id,
+                max_num_connections,
+                self.client,
+                self.conn_idx,
+                self.closed_conns,
+                self.num_closed_conns,
+                handleConnection,
+            );
         }
     };
     // TODO: Put this in a struct and abstract away some of the connection
     // tracking.
-    var open_conns: [max_connections]@Frame(Wrapper.run) = undefined;
-    var closed_conns: [max_connections]u64 = undefined;
+    var open_conns: [max_num_connections]@Frame(Wrapper.run) = undefined;
+    var closed_conns: [max_num_connections]u64 = undefined;
     var num_open_conns: usize = 0;
     var num_closed_conns: usize = 0;
 
@@ -211,7 +251,7 @@ fn runAcceptorLoop(ring: *AsyncIOUring, server: os.fd_t, thread_id: u64, comptim
         var new_conn_fd = accept_cqe.res;
 
         // Get an index in the array of open connections for this new
-        // connection. If we already have max_connections open connections,
+        // connection. If we already have max_num_connections open connections,
         // this_conn_idx will be null.
         const this_conn_idx = blk: {
             if (num_closed_conns > 0) {
@@ -220,7 +260,7 @@ fn runAcceptorLoop(ring: *AsyncIOUring, server: os.fd_t, thread_id: u64, comptim
                 num_closed_conns -= 1;
                 break :blk closed_conns[num_closed_conns];
             } else {
-                if (num_open_conns == max_connections) break :blk null;
+                if (num_open_conns == max_num_connections) break :blk null;
 
                 const next_idx = num_open_conns;
                 // We need to expand the number of open connections.
@@ -232,6 +272,7 @@ fn runAcceptorLoop(ring: *AsyncIOUring, server: os.fd_t, thread_id: u64, comptim
         if (this_conn_idx) |idx| {
             const wrapper = Wrapper{
                 .ring = ring,
+                .writer = &writer,
                 .thread_id = thread_id,
                 .client = new_conn_fd,
                 .conn_idx = idx,
@@ -256,7 +297,17 @@ fn runAcceptorLoop(ring: *AsyncIOUring, server: os.fd_t, thread_id: u64, comptim
 
 // Does the main echo server loop for a single connection, recieving and
 // echoing input over the file descriptor for the client.
-fn handle_connection(ring: *AsyncIOUring, thread_id: usize, client: os.fd_t, conn_idx: u64, closed_conns: *[max_connections]u64, num_closed_conns: *usize, comptime handleConnection: ConnHandler) !void {
+fn handle_connection(
+    ring: *AsyncIOUring,
+    writer: *AsyncWriter,
+    thread_id: usize,
+    comptime max_num_connections: u64,
+    client: os.fd_t,
+    conn_idx: u64,
+    closed_conns: *[max_num_connections]u64,
+    num_closed_conns: *usize,
+    comptime handleConnection: ConnHandler,
+) !void {
     defer {
         // std.debug.print("Closing connection with index {}\n", .{conn_idx});
         _ = ring.close(client, null, null) catch |err| {
@@ -268,5 +319,5 @@ fn handle_connection(ring: *AsyncIOUring, thread_id: usize, client: os.fd_t, con
         num_closed_conns.* += 1;
     }
 
-    try await async handleConnection(ServerContext{ .thread_id = thread_id, .io_service = ring }, TcpConnection{ .ring = ring, .socket_fd = client });
+    try await async handleConnection(ServerContext{ .thread_id = thread_id, .io_service = ring, .logger = writer }, TcpConnection{ .ring = ring, .socket_fd = client });
 }

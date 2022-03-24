@@ -60,7 +60,7 @@ pub fn run_client(ring: *AsyncIOUring) !void {
 // Silly echo server benchmark that sends "hello" 100k times in a loop and then
 // outputs throughput.
 pub fn benchmark(ring: *AsyncIOUring, result: *BenchmarkResult) !void {
-    const max_clients = 30;
+    const max_clients = 100;
     var client_frames: [max_clients]@Frame(run_client) = undefined;
 
     var i: u64 = 0;
