@@ -59,7 +59,7 @@ pub fn run_server_event_loop(id: u64) !void {
 // thread..
 pub fn run_server(ring: *AsyncIOUring, id: u64) !void {
     const address = try net.Address.parseIp4("127.0.0.1", 3131);
-    const kernel_backlog = 1;
+    const kernel_backlog = 128;
     const server = try os.socket(address.any.family, os.SOCK.STREAM | os.SOCK.CLOEXEC, 0);
     defer os.close(server);
     try os.setsockopt(server, os.SOL.SOCKET, os.SO.REUSEPORT, &mem.toBytes(@as(c_int, 1)));
