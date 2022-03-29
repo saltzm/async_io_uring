@@ -12,7 +12,7 @@ const linux = os.linux;
 
 const AsyncIOUring = io.AsyncIOUring;
 const AsyncWriter = io.AsyncWriter;
-const RingBuffer = @import("ring_buffer.zig").RingBuffer;
+const AsyncMutex = @import("async_mutex.zig").AsyncMutex;
 
 // TODO: Try out using register_files for all connections and for the listener
 // connection  especially
@@ -34,140 +34,6 @@ pub fn main() !void {
             .address = try net.Address.parseIp4("127.0.0.1", 3131),
         },
     );
-}
-
-const AsyncMutex = struct {
-    is_locked: bool = false,
-    waiters: RingBuffer(anyframe, 1024) = .{},
-
-    const Self = @This();
-
-    fn lock(self: *Self) !void {
-        if (self.is_locked) {
-            suspend {
-                try self.waiters.enqueue(@frame());
-            }
-        }
-        std.debug.assert(!self.is_locked);
-        self.is_locked = true;
-    }
-
-    fn unlock(self: *Self) !void {
-        std.debug.assert(self.is_locked);
-        self.is_locked = false;
-        if (self.waiters.getSize() > 0) {
-            resume try self.waiters.dequeue();
-        }
-    }
-};
-
-fn takeLock(mutex: *AsyncMutex, got_lock: *bool) !void {
-    try mutex.lock();
-    got_lock.* = true;
-    try mutex.unlock();
-}
-
-fn testAsyncMutexSingleWaiter() !void {
-    var mutex = AsyncMutex{};
-    var got_lock = false;
-
-    // Lock from this thread.
-    try mutex.lock();
-
-    // Kick off async task to try to take the lock and set got_lock to true.
-    _ = async takeLock(&mutex, &got_lock);
-
-    // Should still be false because this thread still is holding the lock.
-    try std.testing.expectEqual(got_lock, false);
-
-    // This will resume the code inside takeLock.
-    try mutex.unlock();
-
-    try std.testing.expectEqual(got_lock, true);
-}
-
-fn takeLockMulti(mutex: *AsyncMutex, id: usize, lock_order: *RingBuffer(usize, 3)) !void {
-    try mutex.lock();
-    try lock_order.enqueue(id);
-    try mutex.unlock();
-}
-
-fn testAsyncMutexMultiWaiter() !void {
-    var mutex = AsyncMutex{};
-
-    // Lock from this thread.
-    try mutex.lock();
-
-    var lock_order = RingBuffer(usize, 3){};
-
-    // Kick off async tasks to try to take the lock and enqueue themselves in
-    // the lock order.
-    var f1 = async takeLockMulti(&mutex, 0, &lock_order);
-    var f2 = async takeLockMulti(&mutex, 1, &lock_order);
-    var f3 = async takeLockMulti(&mutex, 2, &lock_order);
-
-    // Should still be false because this thread still is holding the lock.
-    try std.testing.expectEqual(lock_order.getSize(), 0);
-
-    // This will resume the code inside the first call to takeLockMulti, which
-    // in turn will resume the other waiting coroutines.
-    try mutex.unlock();
-
-    try nosuspend await f1;
-    try nosuspend await f2;
-    try nosuspend await f3;
-
-    try std.testing.expectEqual(lock_order.dequeue(), 0);
-    try std.testing.expectEqual(lock_order.dequeue(), 1);
-    try std.testing.expectEqual(lock_order.dequeue(), 2);
-}
-
-test "async mutex single waiter" {
-    var f = async testAsyncMutexSingleWaiter();
-    try nosuspend await f;
-}
-
-test "async mutex multi waiter" {
-    var f = async testAsyncMutexMultiWaiter();
-    try nosuspend await f;
-}
-
-// TODO: Add a test where we suspend while holding the lock.
-
-fn testConcurrentWrite(writer: *ConcurrentAsyncWriter) !void {
-    try writer.print("foo\n", .{});
-}
-
-// TODO: Add as an actual test case.
-fn testAsyncMutexWorksWithEventLoop() !void {
-    if (builtin.os.tag != .linux) return error.SkipZigTest;
-
-    var ring = IO_Uring.init(2, 0) catch |err| switch (err) {
-        error.SystemOutdated => return error.SkipZigTest,
-        error.PermissionDenied => return error.SkipZigTest,
-        else => return err,
-    };
-    defer ring.deinit();
-    var async_ring = AsyncIOUring{ .ring = &ring };
-
-    //const path = "test_io_uring_write_read_fixed";
-    //const file = try std.fs.cwd().createFile(path, .{ .read = true, .truncate = true });
-    //defer file.close();
-    //defer std.fs.cwd().deleteFile(path) catch {};
-    //const fd = file.handle;
-
-    var writer = try AsyncWriter.init(&async_ring, std.io.getStdErr().handle);
-    var concurrent_writer = ConcurrentAsyncWriter{ .writer = &writer };
-
-    var f1 = async testConcurrentWrite(&concurrent_writer);
-    var f2 = async testConcurrentWrite(&concurrent_writer);
-    var f3 = async testConcurrentWrite(&concurrent_writer);
-
-    try async_ring.run_event_loop();
-
-    try nosuspend await f1;
-    try nosuspend await f2;
-    try nosuspend await f3;
 }
 
 fn handleEchoClientConnection(serverCtx: ServerContext, client: TcpConnection) !void {
@@ -204,7 +70,11 @@ fn handleEchoClientConnection(serverCtx: ServerContext, client: TcpConnection) !
     }
 }
 
-const ConcurrentAsyncWriter = struct {
+/// Class to allow multiple concurrent coroutines to write to the same file
+/// handle without interfering with one another. This is required even with a
+/// single threaded server since the kernel can fulfill multiple io_uring
+/// requests to the same file in parallel.
+pub const ConcurrentAsyncWriter = struct {
     mutex: AsyncMutex = .{},
     writer: *AsyncWriter,
 
@@ -221,6 +91,8 @@ const ConcurrentAsyncWriter = struct {
 pub const ServerContext = struct {
     thread_id: usize,
     io_service: *AsyncIOUring,
+    // TODO: Put this in some kind of "global user data" field that can be
+    // configured? Not everyone will want this.
     logger: *ConcurrentAsyncWriter,
 };
 
