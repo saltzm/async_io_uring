@@ -22,7 +22,7 @@ const AsyncMutex = @import("async_mutex.zig").AsyncMutex;
 
 pub fn main() !void {
     // TODO: May need to allocate the array of threads on the heap so you can
-    // do this. O
+    // do this.
     // const num_threads = comptime try std.Thread.getCpuCount();
     const num_threads = 1;
     const max_num_connections = 10000;
