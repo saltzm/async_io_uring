@@ -1103,7 +1103,7 @@ pub const Statx = struct {
     pub fn convertError(linux_err: os.E) ?Error {
         // Copied from std.os.preadv.
         return switch (linux_err) {
-            .ACCESS => error.AccessDenied,
+            .ACCES => error.AccessDenied,
             // fd is not a valid open file descriptor.
             .BADF => unreachable,
             // path or buf is NULL or points to a location outside the
