@@ -62,8 +62,7 @@ thread.
   the `IO_Uring` library. This means there's no heap allocation. It also relies
   entirely on kernel functionality for timeouts and cancellation.
 * **Complete**: You should be able to do anything with this that you could do
-  with `IO_Uring`. (Right now there are a few missing operations - these are
-  noted in `TODO`s in the source.)
+  with `IO_Uring`.
 * **Easy to use**: Because of the use of coroutines, code written with this
   library looks almost identical to blocking code. In addition, operation
   timeouts and cancellation support is integrated into the API for all operations.
