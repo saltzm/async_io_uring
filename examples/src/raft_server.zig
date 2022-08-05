@@ -436,32 +436,27 @@ fn ConsensusModule(
 }
 
 const Test = struct {
+    const DummyMessageQueue = struct {
+        pub fn waitForNextWithDeadline(_: @This(), _: u64) ?RaftMessage {
+            return null;
+        }
+    };
     const DummyClock = struct {
         pub fn now(_: @This()) u64 {
             return 0;
         }
     };
+
+    const DummyElectionTimer = struct {
+        pub fn getElectionDeadline(_: @This()) u64 {
+            return 0;
+        }
+        pub fn reset(_: @This()) void {}
+    };
 };
 
 test "runAsFollower returns when no messages arrive within election timeout" {
-    const MessageQueue = struct {
-        pub fn waitForNextWithDeadline(_: @This(), _: u64) ?RaftMessage {
-            return null;
-        }
-    };
-
-    //const RandomNumberGenerator = struct {
-    //    pub fn getRandomIntInRange(_: @This(), min: u64, _: u64) u64 {
-    //        return min;
-    //    }
-    //};
-
-    var ls = LeadershipStatus{ .member_type = MemberType.follower, .current_term = 0 };
-    const msg_queue = MessageQueue{};
-
     const ClusterConfiguration = struct {
-        const my_id: []u8 = "self";
-        const my_addr: []u8 = "selfAddr";
         const Peer = struct {
             pub fn sendAppendEntriesResponse(_: @This(), _: u64, _: RaftMessageContents) void {}
         };
@@ -471,26 +466,14 @@ test "runAsFollower returns when no messages arrive within election timeout" {
         }
     };
 
-    const ElectionTimer = struct {
-        pub fn getElectionDeadline(_: @This()) u64 {
-            return 0;
-        }
-        pub fn reset(_: @This()) void {}
-    };
+    var ls = LeadershipStatus{ .member_type = MemberType.follower, .current_term = 0 };
 
-    const CM = ConsensusModule(MessageQueue, Test.DummyClock, ElectionTimer, ClusterConfiguration);
-    CM.runAsFollower(msg_queue, ElectionTimer{}, &ls);
+    const CM = ConsensusModule(Test.DummyMessageQueue, Test.DummyClock, Test.DummyElectionTimer, ClusterConfiguration);
+    CM.runAsFollower(Test.DummyMessageQueue{}, Test.DummyElectionTimer{}, &ls);
 }
 
 test "runAsCandidate sends request vote to all peers" {
-    const MessageQueue = struct {
-        pub fn waitForNextWithDeadline(_: @This(), _: u64) ?RaftMessage {
-            return null;
-        }
-    };
-
     var ls = LeadershipStatus{ .member_type = MemberType.candidate, .current_term = 0 };
-    const msg_queue = MessageQueue{};
 
     const ClusterConfiguration = struct {
         peers: [3]Peer = [_]Peer{ Peer{}, Peer{}, Peer{} },
@@ -509,22 +492,19 @@ test "runAsCandidate sends request vote to all peers" {
         }
 
         pub fn getCurrentPeers(self: *@This()) []Peer {
-            //const peers: []Peer = self.peers[0..];
             return self.peers[0..];
-            //return @as([]Peer, peers);
         }
     };
 
-    const ElectionTimer = struct {
-        pub fn getElectionDeadline(_: @This()) u64 {
-            return 0;
-        }
-        pub fn reset(_: @This()) void {}
-    };
+    const CM = ConsensusModule(
+        Test.DummyMessageQueue,
+        Test.DummyClock,
+        Test.DummyElectionTimer,
+        ClusterConfiguration,
+    );
 
-    const CM = ConsensusModule(MessageQueue, Test.DummyClock, ElectionTimer, ClusterConfiguration);
     var cluster_config = ClusterConfiguration{};
-    _ = CM.runAsCandidate(msg_queue, ElectionTimer{}, ls, &cluster_config);
+    _ = CM.runAsCandidate(Test.DummyMessageQueue{}, Test.DummyElectionTimer{}, ls, &cluster_config);
 
     for (cluster_config.getCurrentPeers()) |peer| {
         try std.testing.expectEqual(peer.received_request_vote, true);
