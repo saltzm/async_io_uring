@@ -44,36 +44,34 @@ pub const RPCHeader = struct {
     // ServerAddr of node sending request
     addr: []u8,
 };
+
 pub const RaftMessage = struct {
+    rpc_header: RPCHeader,
     term: u64,
     contents: RaftMessageContents,
+};
+
+const AppendEntriesResponse = struct {
+    // Hint to accelerate rebuilding slow nodes.
+    // last_log: u64
+    // May not succeed if there's a conflicting entry.
+    success: bool,
+    // Indicates didn't succeed but don't need to retry or backoff for next
+    // request.
+    no_retry_backoff: bool,
 };
 
 pub const RaftMessageContents = union(enum) {
     // Doubles as heartbeat when entries is empty for some reason... Maybe
     // change that?
     append_entries_request: struct {
-        rpc_header: RPCHeader,
-        term: u64,
         // For integrity checking.
-        prev_log_entry: u64,
+        prev_log_index: u64,
         prev_log_term: u64,
         entries: []u8, // TODO
     },
-    append_entries_response: struct {
-        rpc_header: RPCHeader,
-        term: u64,
-        // Hint to accelerate rebuilding slow nodes.
-        // last_log: u64
-        // May not succeed if there's a conflicting entry.
-        success: bool,
-        // Indicates didn't succeed but don't need to retry or backoff for next
-        // request.
-        no_retry_backoff: bool,
-    },
+    append_entries_response: AppendEntriesResponse,
     request_vote_request: struct {
-        rpc_header: RPCHeader,
-        term: u64,
         // Used to ensure safety
         // last_log_index: u64,
         // last_log_term: u64,
@@ -85,8 +83,6 @@ pub const RaftMessageContents = union(enum) {
         leadership_transfer: bool,
     },
     request_vote_response: struct {
-        rpc_header: RPCHeader,
-        term: u64,
         vote_granted: bool,
     },
     install_snapshot_request: struct {
@@ -96,8 +92,8 @@ pub const RaftMessageContents = union(enum) {
         // TODO
     },
     // Used by leader to tell another server to start an election.
-    timeout_now_request: struct { rpc_header: RPCHeader },
-    timeout_now_response: struct { rpc_header: RPCHeader },
+    timeout_now_request: struct {},
+    timeout_now_response: struct {},
 };
 
 fn handleClientConnection(serverCtx: server_util.ServerContext, client: server_util.TcpConnection) !void {
@@ -198,22 +194,22 @@ const LeadershipStatus = struct { current_term: u64, member_type: MemberType };
 fn runConsensusModule(
     comptime MessageQueue: type,
     comptime Clock: type,
-    comptime RandomNumberGenerator: type,
+    comptime ElectionTimer: type,
     comptime ClusterConfiguration: type,
     msg_queue: MessageQueue,
     clock: Clock,
-    rng: RandomNumberGenerator,
+    election_timer: ElectionTimer,
     leadership_status: *LeadershipStatus,
     cluster_config: ClusterConfiguration,
 ) void {
     // We should start as a follower.
     std.debug.assert(leadership_status.member_type == RaftServer.follower);
 
-    const CM = ConsensusModule(MessageQueue, Clock, RandomNumberGenerator, ClusterConfiguration);
+    const CM = ConsensusModule(MessageQueue, Clock, ElectionTimer, ClusterConfiguration);
 
     while (true) {
         // Run as a follower until we don't hear from the leader within the election timeout.
-        CM.runAsFollower(msg_queue, clock, rng, leadership_status);
+        CM.runAsFollower(msg_queue, election_timer, leadership_status);
 
         // At this point, we've timed out waiting for an AppendEntriesRequest from the leader. We
         // become a candidate and start an election.
@@ -227,7 +223,7 @@ fn runConsensusModule(
             leadership_status = CM.runAsCandidate(
                 msg_queue,
                 clock,
-                rng,
+                election_timer,
                 leadership_status,
                 cluster_config,
             );
@@ -240,43 +236,73 @@ fn runConsensusModule(
         }
     }
 }
+//RaftMessage{
+//                                .rpc_header = .{
+//                                    .id = cluster_config.getMyId(),
+//                                    .addr = cluster_config.getMyAddr(),
+//                                },
+//                                .term = leadership_status.current_term,
+//                                .contents = .{
+//                                    .append_entries_response = .{
+//                                        .success = false,
+//                                        .no_retry_backoff = true, // TODO
+//                                    },
+//                                },
+//                            }
+//
+//
+//
+//                         const logOk = m.prev_log_index == 0 or
+//                            (m.prev_log_index <= log.getLastIndex() and
+//                            m.prev_log_term == log.getTermOfEntryAt(m.prev_log_index));
+//
+//                        // Reject this request, if it's from a stale leader or logs don't match.
+//                        if (msg.term < leadership_status.current_term or !logOk) {
+//                            var sender = cluster_config.getPeer(msg.rpc_header.id);
+//                            sender.sendAppendEntriesResponse(
+//                                leadership_status.current_term,
+//                                AppendEntriesResponse{
+//                                    .success = false,
+//                                    .no_retry_backoff = true, // TODO - double check
+//                                },
+//                            );
 
+//
+// TODO persistence of persistent state
 fn ConsensusModule(
     comptime MessageQueue: type,
     comptime Clock: type,
-    comptime RandomNumberGenerator: type,
+    comptime ElectionTimer: type,
     comptime ClusterConfiguration: type,
 ) type {
     return struct {
         fn runAsFollower(
             msg_queue: MessageQueue,
-            clock: Clock,
-            rng: RandomNumberGenerator,
+            election_timer: ElectionTimer,
             leadership_status: *LeadershipStatus,
         ) void {
-            var election_deadline = clock.now() + rng.getRandomIntInRange(150, 300);
-
             // Loop as a follower as long as we receive a message from the leader before the election
             // deadline.
-            while (msg_queue.waitForNextWithDeadline(election_deadline)) |msg| {
-                // Check whether we've recevied an AppendEntriesRequest from the leader and should
+            while (msg_queue.waitForNextWithDeadline(election_timer.getElectionDeadline())) |msg| {
+                if (msg.term > leadership_status.current_term) {
+                    leadership_status.current_term = msg.term;
+                }
+                // Check whether we've received an AppendEntriesRequest from the leader and should
                 // update our election deadline.
                 switch (msg.contents) {
                     // TODO: Hashicorp implementation also updates election timer on an install
                     // snapshot request, but it's not mentioned in the raft paper
-                    .append_entries_request => |append_entries_request| {
-                        if (append_entries_request.term < leadership_status.current_term) {
-                            // Reject this request, it's from a stale leader.
-                            // TODO: Send response with !success
-                            continue;
+                    .append_entries_request => {
+                        // Reject this request, if it's from a stale leader or logs don't match.
+                        if (msg.term == leadership_status.current_term) {
+                            // Received an AppendEntriesRequest from the leader - update election
+                            // deadline.
+                            election_timer.reset();
                         }
-
-                        // Received an AppendEntriesRequest from the leader - update election
-                        // deadline.
-                        election_deadline = clock.now() + rng.getRandomIntInRange(150, 300);
                     },
-                    .request_vote_request => |request_vote_request| {
-                        if (request_vote_request.term < leadership_status.current_term) {
+                    .request_vote_request => {
+                        // TODO Maybe have a separate thread/process-y thing handling this stuff?
+                        if (msg.term < leadership_status.current_term) {
                             // Reply false.
                         } else {
                             // TODO If votedFor is null or candidateId, and candidate’s log is at
@@ -292,19 +318,17 @@ fn ConsensusModule(
 
         fn runAsCandidate(
             msg_queue: MessageQueue,
-            clock: Clock,
-            rng: RandomNumberGenerator,
+            election_timer: ElectionTimer,
             leadership_status: LeadershipStatus,
-            cluster_config: ClusterConfiguration,
+            cluster_config: *ClusterConfiguration,
         ) LeadershipStatus {
+            std.debug.assert(leadership_status.member_type == MemberType.candidate);
             // From Raft paper
             // • Increment currentTerm
             // • Vote for self
             // • Reset election timer
             // • Send RequestVote RPCs to all other servers
-            var election_deadline = clock.now() + rng.getRandomIntInRange(150, 300);
-
-            for (cluster_config.getCurrentPeers()) |peer| {
+            for (cluster_config.getCurrentPeers()) |*peer| {
                 peer.requestVote();
             }
 
@@ -316,7 +340,7 @@ fn ConsensusModule(
 
             // Loop as a candidate, looking for RequestVoteResponses from peers or an
             // AppendEntriesRequest from a new leader.
-            while (msg_queue.waitForNextWithDeadline(election_deadline)) |msg| {
+            while (msg_queue.waitForNextWithDeadline(election_timer.getElectionDeadline())) |msg| {
                 // TODO make sure we do this for every message
                 if (msg.term > leadership_status.current_term) {
                     // Received a request from a server with a higher term, which may be the new
@@ -332,17 +356,16 @@ fn ConsensusModule(
                 switch (msg.contents) {
                     // TODO: Hashicorp implementation also updates election timer on an install
                     // snapshot request, but it's not mentioned in the raft paper
-                    .append_entries_request => |append_entries_request| {
-                        if (append_entries_request.term < leadership_status.current_term) {
-                            // Ignore this message, it's from a stale leader.
-                            // TODO: respond with "NO NO BAD"
-                            continue;
+                    .append_entries_request => {
+                        if (msg.term == leadership_status.current_term) {
+                            // Received an AppendEntriesRequest from the leader - become a follower.
+                            // TODO: This should not consume the message, as we should still apply
+                            // it as a follower....
+                            return LeadershipStatus{
+                                .member_type = MemberType.follower,
+                                .current_term = msg.term,
+                            };
                         }
-                        // Received an AppendEntriesRequest from the leader - become a follower.
-                        return LeadershipStatus{
-                            .member_type = MemberType.follower,
-                            .current_term = msg.term,
-                        };
                     },
                     .request_vote_request => {
                         // TODO
@@ -412,6 +435,14 @@ fn ConsensusModule(
     };
 }
 
+const Test = struct {
+    const DummyClock = struct {
+        pub fn now(_: @This()) u64 {
+            return 0;
+        }
+    };
+};
+
 test "runAsFollower returns when no messages arrive within election timeout" {
     const MessageQueue = struct {
         pub fn waitForNextWithDeadline(_: @This(), _: u64) ?RaftMessage {
@@ -419,24 +450,83 @@ test "runAsFollower returns when no messages arrive within election timeout" {
         }
     };
 
-    const Clock = struct {
-        pub fn now(_: @This()) u64 {
-            return 0;
-        }
-    };
-
-    const RandomNumberGenerator = struct {
-        pub fn getRandomIntInRange(_: @This(), min: u64, _: u64) u64 {
-            return min;
-        }
-    };
-    const ClusterConfiguration = struct {};
+    //const RandomNumberGenerator = struct {
+    //    pub fn getRandomIntInRange(_: @This(), min: u64, _: u64) u64 {
+    //        return min;
+    //    }
+    //};
 
     var ls = LeadershipStatus{ .member_type = MemberType.follower, .current_term = 0 };
     const msg_queue = MessageQueue{};
-    const clock = Clock{};
-    const rng = RandomNumberGenerator{};
 
-    const CM = ConsensusModule(MessageQueue, Clock, RandomNumberGenerator, ClusterConfiguration);
-    CM.runAsFollower(msg_queue, clock, rng, &ls);
+    const ClusterConfiguration = struct {
+        const my_id: []u8 = "self";
+        const my_addr: []u8 = "selfAddr";
+        const Peer = struct {
+            pub fn sendAppendEntriesResponse(_: @This(), _: u64, _: RaftMessageContents) void {}
+        };
+
+        pub fn getPeer(_: @This(), _: []u8) Peer {
+            return .{};
+        }
+    };
+
+    const ElectionTimer = struct {
+        pub fn getElectionDeadline(_: @This()) u64 {
+            return 0;
+        }
+        pub fn reset(_: @This()) void {}
+    };
+
+    const CM = ConsensusModule(MessageQueue, Test.DummyClock, ElectionTimer, ClusterConfiguration);
+    CM.runAsFollower(msg_queue, ElectionTimer{}, &ls);
+}
+
+test "runAsCandidate sends request vote to all peers" {
+    const MessageQueue = struct {
+        pub fn waitForNextWithDeadline(_: @This(), _: u64) ?RaftMessage {
+            return null;
+        }
+    };
+
+    var ls = LeadershipStatus{ .member_type = MemberType.candidate, .current_term = 0 };
+    const msg_queue = MessageQueue{};
+
+    const ClusterConfiguration = struct {
+        peers: [3]Peer = [_]Peer{ Peer{}, Peer{}, Peer{} },
+
+        const Peer = struct {
+            const Self = @This();
+            received_request_vote: bool = false,
+            pub fn sendAppendEntriesResponse(_: Self, _: u64, _: RaftMessageContents) void {}
+            pub fn requestVote(self: *Self) void {
+                self.received_request_vote = true;
+            }
+        };
+
+        pub fn getPeer(_: @This(), _: []u8) Peer {
+            return .{};
+        }
+
+        pub fn getCurrentPeers(self: *@This()) []Peer {
+            //const peers: []Peer = self.peers[0..];
+            return self.peers[0..];
+            //return @as([]Peer, peers);
+        }
+    };
+
+    const ElectionTimer = struct {
+        pub fn getElectionDeadline(_: @This()) u64 {
+            return 0;
+        }
+        pub fn reset(_: @This()) void {}
+    };
+
+    const CM = ConsensusModule(MessageQueue, Test.DummyClock, ElectionTimer, ClusterConfiguration);
+    var cluster_config = ClusterConfiguration{};
+    _ = CM.runAsCandidate(msg_queue, ElectionTimer{}, ls, &cluster_config);
+
+    for (cluster_config.getCurrentPeers()) |peer| {
+        try std.testing.expectEqual(peer.received_request_vote, true);
+    }
 }
