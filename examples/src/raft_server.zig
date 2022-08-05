@@ -479,10 +479,8 @@ test "runAsCandidate sends request vote to all peers" {
         peers: [3]Peer = [_]Peer{ Peer{}, Peer{}, Peer{} },
 
         const Peer = struct {
-            const Self = @This();
             received_request_vote: bool = false,
-            pub fn sendAppendEntriesResponse(_: Self, _: u64, _: RaftMessageContents) void {}
-            pub fn requestVote(self: *Self) void {
+            pub fn requestVote(self: *@This()) void {
                 self.received_request_vote = true;
             }
         };
