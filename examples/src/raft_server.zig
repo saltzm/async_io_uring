@@ -480,6 +480,7 @@ test "runAsCandidate sends request vote to all peers" {
 
         const Peer = struct {
             received_request_vote: bool = false,
+
             pub fn requestVote(self: *@This()) void {
                 self.received_request_vote = true;
             }
