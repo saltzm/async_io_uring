@@ -560,7 +560,39 @@ test "runAsCandidate sends request vote to all peers" {
 }
 
 test "three node cluster" {
-    const MessageQueue = struct {
+    const AsyncMQ = struct {
+        baton: *Baton,
+        messages: RingBuffer(RaftMessage, 1024) = .{},
+
+        pub fn waitForNextWithDeadline(self: *@This(), _: u64) ?RaftMessage {
+            self.baton.yield() catch |err| {
+                std.debug.print("yield error: {} \n", .{err});
+                std.os.exit(1);
+            };
+
+            const msg = self.messages.dequeue() catch |err| {
+                if (err == error.RingBufferEmpty) {
+                    return null;
+                } else return err;
+            };
+
+            return msg;
+        }
+
+        pub fn enqueue(self: *@This(), msg: RaftMessage) void {
+            self.messages.enqueue(msg) catch {
+                //std.debug.print("RingBuffer enqueue error: .{} \n", .{err});
+                //std.os.exit(1);
+            };
+            self.baton.yield() catch |err| {
+                std.debug.print("yield error: {} \n", .{err});
+                std.os.exit(1);
+            };
+        }
+    };
+
+    //const MessageQueue = struct {
+    _ = struct {
         //TODO maybe try something fancy with asyncmutex
         mtx: std.Thread.Mutex = .{},
         messages: RingBuffer(RaftMessage, 1024) = .{},
@@ -592,7 +624,7 @@ test "three node cluster" {
     };
 
     const Peer = struct {
-        msg_queue: MessageQueue = MessageQueue{},
+        msg_queue: AsyncMQ,
         id: []const u8,
         // TODO
         addr: *const [5:0]u8 = "addr1",
@@ -714,30 +746,40 @@ test "three node cluster" {
     };
 
     const CM = ConsensusModule(
-        MessageQueue,
+        AsyncMQ, //MessageQueue,
         Test.DummyClock,
         Test.DummyElectionTimer,
         ClusterConfiguration,
     );
 
-    var threads: [3]std.Thread = undefined;
+    //    var threads: [3]std.Thread = undefined;
     var cms: [3]CM = undefined;
     const ids = [_][]const u8{ "0", "1", "2" };
-    var peers: [3]Peer = [_]Peer{
-        Peer{ .id = ids[0][0..] },
-        Peer{ .id = ids[1][0..] },
-        Peer{ .id = ids[2][0..] },
-    };
 
+    var baton = Baton{};
+
+    var peers: [3]Peer = [_]Peer{
+        Peer{ .id = ids[0][0..], .msg_queue = AsyncMQ{ .baton = &baton } },
+        Peer{ .id = ids[1][0..], .msg_queue = AsyncMQ{ .baton = &baton } },
+        Peer{ .id = ids[2][0..], .msg_queue = AsyncMQ{ .baton = &baton } },
+    };
     var p0 = [_]*Peer{ &peers[1], &peers[2] };
     var p1 = [_]*Peer{ &peers[0], &peers[2] };
     var p2 = [_]*Peer{ &peers[0], &peers[1] };
+
+    var ccs: [3]ClusterConfiguration = undefined;
+    ccs[0] = ClusterConfiguration.init(ids[0], p0[0..]);
+    defer ccs[0].deinit();
+    ccs[1] = ClusterConfiguration.init(ids[1], p1[0..]);
+    defer ccs[1].deinit();
+    ccs[2] = ClusterConfiguration.init(ids[2], p2[0..]);
+    defer ccs[2].deinit();
 
     cms[0] = CM{
         .msg_queue = &peers[0].msg_queue,
         .clock = Test.DummyClock{},
         .election_timer = Test.DummyElectionTimer{},
-        .cluster_config = ClusterConfiguration.init(ids[0], p0[0..]),
+        .cluster_config = ccs[0],
         .leadership_status = LeadershipStatus{
             .member_type = MemberType.follower,
             .current_term = 0,
@@ -747,7 +789,7 @@ test "three node cluster" {
         .msg_queue = &peers[1].msg_queue,
         .clock = Test.DummyClock{},
         .election_timer = Test.DummyElectionTimer{},
-        .cluster_config = ClusterConfiguration.init(ids[1], p1[0..]),
+        .cluster_config = ccs[1],
         .leadership_status = LeadershipStatus{
             .member_type = MemberType.follower,
             .current_term = 0,
@@ -757,20 +799,90 @@ test "three node cluster" {
         .msg_queue = &peers[2].msg_queue,
         .clock = Test.DummyClock{},
         .election_timer = Test.DummyElectionTimer{},
-        .cluster_config = ClusterConfiguration.init(ids[2], p2[0..]),
+        .cluster_config = ccs[2],
         .leadership_status = LeadershipStatus{
             .member_type = MemberType.follower,
             .current_term = 0,
         },
     };
+    // TODO deinit cluster config
 
-    for (threads) |*t, i| {
-        std.debug.print("Spawning: {}\n", .{i});
-        t.* = try std.Thread.spawn(.{}, CM.run, .{&cms[i]});
+    var frames: [3]@Frame(CM.run) = undefined;
+    //for (threads) |*t, i| {
+    //    std.debug.print("Spawning: {}\n", .{i});
+    //    t.* = try std.Thread.spawn(.{}, CM.run, .{&cms[i]});
+    //
+    //}
+
+    //// TODO Try to figure out how to check invariants while it runs!
+    //for (threads) |*t| {
+    //    t.join();
+    //}
+
+    for (frames) |*f, i| {
+        f.* = async CM.run(&cms[i]);
     }
 
-    for (threads) |*t| {
-        t.join();
+    var leaders_by_term = std.AutoHashMap(u64, []const u8).init(std.testing.allocator);
+    defer leaders_by_term.deinit();
+
+    // TODO memory leak if test fails bc of async stuff. Maybe doesn't matter?
+
+    var time_since_leader = time.milliTimestamp();
+    while (try baton.runOne()) {
+        // TODO: CHECK INVARIANTS!
+        //
+        // From: https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-857.pdf
+        // Which sites/is cited in raft dissertation
+        //:
+        // Election Safety: at most one leader can be elected in a given term
+        //var num_leaders = 0;
+        //var terms: [3]u64 = undefined;
+
+        var num_leaders: u64 = 0;
+        for (cms) |cm| {
+            var ls = cm.leadership_status;
+            if (ls.member_type == MemberType.leader) {
+                num_leaders += 1;
+                std.debug.print("Adding leader {s} for term {}", .{
+                    cm.cluster_config.my_id,
+                    ls.current_term,
+                });
+                // Asserts not an existing leader!
+                try leaders_by_term.putNoClobber(ls.current_term, cm.cluster_config.my_id);
+            }
+        }
+
+        std.debug.print("\nNode 0: {}\nNode 1: {}\nNode 2: {}\n", .{
+            cms[0].leadership_status,
+            cms[1].leadership_status,
+            cms[2].leadership_status,
+        });
+
+        if (num_leaders > 1) {
+            time_since_leader = time.milliTimestamp();
+        }
+
+        // Should elect a leader within a second
+        // TODO: This probably isn't a real guarantee, but it makes our test end for now at least.
+        try std.testing.expect(time.milliTimestamp() - time_since_leader < 1000);
+
+        //        for (cms) |cm| {
+        //            terms[i] = cm.leadership_status.current_term;
+        //        }
+        // Leader Append-Only: a leader never overwrites or deletes entries in its log; it
+        // only appends new entries.
+        // Log Matching: if two logs contain an entry with the same index and term, then
+        // the logs are identical in all entries up through the given index.
+        // Leader Completeness: if a log entry is committed in a given term, then that entry
+        // will be present in the logs of the leaders for all higher-numbered terms.
+        // State Machine Safety: if a node has applied a log entry at a given index to its state
+        // machine, no other server will ever apply a different log entry for the same index.
+
+    }
+
+    for (frames) |*f| {
+        try nosuspend await f;
     }
 
     //for (cluster_config.getCurrentPeers()) |*peer| {
@@ -938,4 +1050,51 @@ test "Channel" {
     var finished_test = false;
     _ = async test_fibonacci_w_channel(&finished_test);
     try expect(finished_test);
+}
+
+const Baton = struct {
+    // TODO: Make size of this configurable or use a growable buffer.
+    waiters: RingBuffer(anyframe, 1024) = .{},
+
+    const Self = @This();
+
+    pub fn yield(self: *Self) !void {
+        suspend {
+            try self.waiters.enqueue(@frame());
+        }
+    }
+
+    pub fn runOne(self: *Self) !bool {
+        if (self.waiters.getSize() > 0) {
+            resume try self.waiters.dequeue();
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    pub fn run(self: *Self) !void {
+        while (try self.runOne()) {}
+    }
+};
+
+fn subroutine(b: *Baton, id: u64) !void {
+    var i: u64 = 0;
+    while (i < 3) : (i += 1) {
+        std.debug.print("id: {}, i: {}\n", .{ id, i });
+        try b.yield();
+    }
+}
+
+fn testBaton() !void {}
+
+test "Baton" {
+    var baton = Baton{};
+
+    var f1 = async subroutine(&baton, 0);
+    var f2 = async subroutine(&baton, 1);
+
+    try baton.run();
+    try nosuspend await f1;
+    try nosuspend await f2;
 }
