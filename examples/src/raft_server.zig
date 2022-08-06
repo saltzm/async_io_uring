@@ -328,9 +328,15 @@ fn ConsensusModule(
                             // least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
                             if (votedFor) |_| {
                                 // std.debug.print("Already voted for {s}", .{v});
-                                sender.sendRejectingVote(leadership_status.current_term);
+                                sender.sendRejectingVote(
+                                    cluster_config.my_id,
+                                    leadership_status.current_term,
+                                );
                             } else {
-                                sender.sendAffirmativeVote(leadership_status.current_term);
+                                sender.sendAffirmativeVote(
+                                    cluster_config.my_id,
+                                    leadership_status.current_term,
+                                );
                                 votedFor = msg.rpc_header.id;
                             }
                         }
@@ -355,7 +361,7 @@ fn ConsensusModule(
             // • Reset election timer
             // • Send RequestVote RPCs to all other servers
             for (cluster_config.getCurrentPeers()) |*peer| {
-                peer.requestVote();
+                peer.*.requestVote(cluster_config.my_id, leadership_status.current_term);
             }
 
             // set of peer ids who voted for us.
@@ -400,10 +406,12 @@ fn ConsensusModule(
                     .request_vote_response => |request_vote_response| {
                         if (request_vote_response.vote_granted) {
                             try votes.put(msg.rpc_header.id, {});
+                            std.debug.print("{s} received vote from {s}\n", .{ cluster_config.my_id, msg.rpc_header.id });
                             // TODO: Add vote to tally
                             // If have enough votes, become leader.
-                            // TODO >= ?
-                            if (votes.count() > cluster_config.getCurrentPeers().len / 2) {
+                            // TODO: Make this always right
+                            var quorum = cluster_config.getCurrentPeers().len / 2 + 1;
+                            if (votes.count() > quorum) {
                                 return LeadershipStatus{
                                     .member_type = MemberType.leader,
                                     .current_term = leadership_status.current_term,
@@ -441,7 +449,7 @@ fn ConsensusModule(
                 // Send heartbeats to all peers if enough time has elapsed.
                 if (clock.now() > next_heartbeat_time) {
                     for (cluster_config.getCurrentPeers()) |*peer| {
-                        peer.sendHeartbeat();
+                        peer.*.sendHeartbeat();
                     }
                     next_heartbeat_time = clock.now() + heartbeat_interval_ms;
                 }
@@ -485,10 +493,11 @@ const Test = struct {
 
 test "runAsFollower returns when no messages arrive within election timeout" {
     const ClusterConfiguration = struct {
+        my_id: []const u8 = "",
         const Peer = struct {
             pub fn sendAppendEntriesResponse(_: @This(), _: u64, _: RaftMessageContents) void {}
-            pub fn sendAffirmativeVote(_: *@This(), _: u64) void {}
-            pub fn sendRejectingVote(_: *@This(), _: u64) void {}
+            pub fn sendAffirmativeVote(_: *@This(), _: []const u8, _: u64) void {}
+            pub fn sendRejectingVote(_: *@This(), _: []const u8, _: u64) void {}
         };
 
         pub fn getPeer(_: @This(), _: []const u8) Peer {
@@ -519,7 +528,7 @@ test "runAsCandidate sends request vote to all peers" {
         const Peer = struct {
             received_request_vote: bool = false,
 
-            pub fn requestVote(self: *@This()) void {
+            pub fn requestVote(self: *@This(), _: []const u8, _: u64) void {
                 self.received_request_vote = true;
             }
         };
@@ -584,17 +593,18 @@ test "three node cluster" {
 
     const Peer = struct {
         msg_queue: MessageQueue = MessageQueue{},
-        id: *const [3:0]u8 = "id1",
+        id: []const u8,
+        // TODO
         addr: *const [5:0]u8 = "addr1",
 
-        pub fn requestVote(self: *@This()) void {
+        pub fn requestVote(self: *@This(), local_id: []const u8, local_term: u64) void {
             self.msg_queue.enqueue(RaftMessage{
                 .rpc_header = .{
                     .protocol_version = 0,
-                    .id = @as([]const u8, self.id[0..]),
+                    .id = local_id,
                     .addr = @as([]const u8, self.addr[0..]),
                 },
-                .term = 0,
+                .term = local_term,
                 .contents = RaftMessageContents{
                     .request_vote_request = .{
                         .last_log_index = 0,
@@ -609,7 +619,7 @@ test "three node cluster" {
             self.msg_queue.enqueue(RaftMessage{
                 .rpc_header = .{
                     .protocol_version = 0,
-                    .id = @as([]const u8, self.id[0..]),
+                    .id = self.id,
                     .addr = @as([]const u8, self.addr[0..]),
                 },
                 .term = 0,
@@ -623,14 +633,14 @@ test "three node cluster" {
             });
         }
 
-        fn sendVote(self: *@This(), term: u64, vote: bool) void {
+        fn sendVote(self: *@This(), local_id: []const u8, local_term: u64, vote: bool) void {
             self.msg_queue.enqueue(RaftMessage{
                 .rpc_header = .{
                     .protocol_version = 0,
-                    .id = @as([]const u8, self.id[0..]),
+                    .id = local_id,
                     .addr = @as([]const u8, self.addr[0..]),
                 },
-                .term = term,
+                .term = local_term,
                 .contents = RaftMessageContents{
                     .request_vote_response = .{
                         .vote_granted = vote,
@@ -638,37 +648,41 @@ test "three node cluster" {
                 },
             });
         }
-        pub fn sendAffirmativeVote(self: *@This(), term: u64) void {
-            self.sendVote(term, true);
+
+        pub fn sendAffirmativeVote(self: *@This(), local_id: []const u8, term: u64) void {
+            self.sendVote(local_id, term, true);
         }
 
-        pub fn sendRejectingVote(self: *@This(), term: u64) void {
-            self.sendVote(term, false);
+        pub fn sendRejectingVote(self: *@This(), local_id: []const u8, term: u64) void {
+            self.sendVote(local_id, term, false);
         }
     };
-
-    var peers: [3]Peer = [_]Peer{ Peer{}, Peer{}, Peer{} };
 
     const ClusterConfiguration = struct {
         const Self = @This();
 
         my_id: []const u8,
-        peers: []Peer,
+        peers: []*Peer,
         peers_by_id: std.StringHashMap(*Peer),
 
-        pub fn init(my_id_: []const u8, starting_peers: []Peer) Self {
+        pub fn init(my_id_: []const u8, starting_peers: []*Peer) Self {
             var self = Self{
                 .my_id = my_id_,
                 .peers = starting_peers,
                 .peers_by_id = std.StringHashMap(*Peer).init(std.testing.allocator),
             };
 
-            for (self.peers) |*p| {
+            for (self.peers) |p| {
                 // TODO: Assuming capacity
                 self.peers_by_id.put(p.id, p) catch |err| {
                     std.debug.print("err putting {}\n", .{err});
                     std.os.exit(1);
                 };
+            }
+
+            var keys = self.peers_by_id.keyIterator();
+            while (keys.next()) |key| {
+                std.debug.print("init Key: {s}\n", .{key.*});
             }
 
             return self;
@@ -678,7 +692,7 @@ test "three node cluster" {
             self.peers_by_id.deinit();
         }
 
-        pub fn getCurrentPeers(self: *@This()) []Peer {
+        pub fn getCurrentPeers(self: *@This()) []*Peer {
             return self.peers;
         }
 
@@ -688,7 +702,12 @@ test "three node cluster" {
                 return peer;
             } else {
                 // TODO
-                std.debug.print("Peer not found\n: {s}", .{id});
+                std.debug.print("Peer not found: {s}\n", .{id});
+                var keys = self.peers_by_id.keyIterator();
+                while (keys.next()) |key| {
+                    std.debug.print("Key: {s}\n", .{key.*});
+                }
+
                 std.os.exit(1);
             }
         }
@@ -704,20 +723,48 @@ test "three node cluster" {
     var threads: [3]std.Thread = undefined;
     var cms: [3]CM = undefined;
     const ids = [_][]const u8{ "0", "1", "2" };
+    var peers: [3]Peer = [_]Peer{
+        Peer{ .id = ids[0][0..] },
+        Peer{ .id = ids[1][0..] },
+        Peer{ .id = ids[2][0..] },
+    };
+
+    var p0 = [_]*Peer{ &peers[1], &peers[2] };
+    var p1 = [_]*Peer{ &peers[0], &peers[2] };
+    var p2 = [_]*Peer{ &peers[0], &peers[1] };
+
+    cms[0] = CM{
+        .msg_queue = &peers[0].msg_queue,
+        .clock = Test.DummyClock{},
+        .election_timer = Test.DummyElectionTimer{},
+        .cluster_config = ClusterConfiguration.init(ids[0], p0[0..]),
+        .leadership_status = LeadershipStatus{
+            .member_type = MemberType.follower,
+            .current_term = 0,
+        },
+    };
+    cms[1] = CM{
+        .msg_queue = &peers[1].msg_queue,
+        .clock = Test.DummyClock{},
+        .election_timer = Test.DummyElectionTimer{},
+        .cluster_config = ClusterConfiguration.init(ids[1], p1[0..]),
+        .leadership_status = LeadershipStatus{
+            .member_type = MemberType.follower,
+            .current_term = 0,
+        },
+    };
+    cms[2] = CM{
+        .msg_queue = &peers[2].msg_queue,
+        .clock = Test.DummyClock{},
+        .election_timer = Test.DummyElectionTimer{},
+        .cluster_config = ClusterConfiguration.init(ids[2], p2[0..]),
+        .leadership_status = LeadershipStatus{
+            .member_type = MemberType.follower,
+            .current_term = 0,
+        },
+    };
 
     for (threads) |*t, i| {
-        cms[i] = CM{
-            .msg_queue = &peers[i].msg_queue,
-            .clock = Test.DummyClock{},
-            .election_timer = Test.DummyElectionTimer{},
-            // TODO peers wired up wrong
-            .cluster_config = ClusterConfiguration.init(ids[i], peers[0..2]),
-            .leadership_status = LeadershipStatus{
-                .member_type = MemberType.follower,
-                .current_term = 0,
-            },
-        };
-
         std.debug.print("Spawning: {}\n", .{i});
         t.* = try std.Thread.spawn(.{}, CM.run, .{&cms[i]});
     }
