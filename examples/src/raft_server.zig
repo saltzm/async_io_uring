@@ -591,38 +591,6 @@ test "three node cluster" {
         }
     };
 
-    //const MessageQueue = struct {
-    _ = struct {
-        //TODO maybe try something fancy with asyncmutex
-        mtx: std.Thread.Mutex = .{},
-        messages: RingBuffer(RaftMessage, 1024) = .{},
-
-        //messages: UnbufferedChannel(RaftMessage) = .{},
-
-        pub fn waitForNextWithDeadline(self: *@This(), _: u64) ?RaftMessage {
-            self.mtx.lock();
-            defer self.mtx.unlock();
-            const msg = self.messages.dequeue() catch |err| {
-                if (err == error.RingBufferEmpty) {
-                    return null;
-                } else return err;
-            };
-
-            return msg;
-            //return self.messages.recv();
-        }
-
-        pub fn enqueue(self: *@This(), msg: RaftMessage) void {
-            //self.messages.send(msg);
-            self.mtx.lock();
-            defer self.mtx.unlock();
-            self.messages.enqueue(msg) catch {
-                //std.debug.print("RingBuffer enqueue error: .{} \n", .{err});
-                //std.os.exit(1);
-            };
-        }
-    };
-
     const Peer = struct {
         msg_queue: AsyncMQ,
         id: []const u8,
@@ -746,13 +714,12 @@ test "three node cluster" {
     };
 
     const CM = ConsensusModule(
-        AsyncMQ, //MessageQueue,
+        AsyncMQ,
         Test.DummyClock,
         Test.DummyElectionTimer,
         ClusterConfiguration,
     );
 
-    //    var threads: [3]std.Thread = undefined;
     var cms: [3]CM = undefined;
     const ids = [_][]const u8{ "0", "1", "2" };
 
@@ -808,17 +775,6 @@ test "three node cluster" {
     // TODO deinit cluster config
 
     var frames: [3]@Frame(CM.run) = undefined;
-    //for (threads) |*t, i| {
-    //    std.debug.print("Spawning: {}\n", .{i});
-    //    t.* = try std.Thread.spawn(.{}, CM.run, .{&cms[i]});
-    //
-    //}
-
-    //// TODO Try to figure out how to check invariants while it runs!
-    //for (threads) |*t| {
-    //    t.join();
-    //}
-
     for (frames) |*f, i| {
         f.* = async CM.run(&cms[i]);
     }
