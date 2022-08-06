@@ -730,49 +730,34 @@ test "three node cluster" {
         Peer{ .id = ids[1][0..], .msg_queue = AsyncMQ{ .baton = &baton } },
         Peer{ .id = ids[2][0..], .msg_queue = AsyncMQ{ .baton = &baton } },
     };
-    var p0 = [_]*Peer{ &peers[1], &peers[2] };
-    var p1 = [_]*Peer{ &peers[0], &peers[2] };
-    var p2 = [_]*Peer{ &peers[0], &peers[1] };
+
+    var peers_by_node: [3][2]*Peer = undefined;
+    peers_by_node[0] = [_]*Peer{ &peers[1], &peers[2] };
+    peers_by_node[1] = [_]*Peer{ &peers[0], &peers[2] };
+    peers_by_node[2] = [_]*Peer{ &peers[0], &peers[1] };
 
     var ccs: [3]ClusterConfiguration = undefined;
-    ccs[0] = ClusterConfiguration.init(ids[0], p0[0..]);
-    defer ccs[0].deinit();
-    ccs[1] = ClusterConfiguration.init(ids[1], p1[0..]);
-    defer ccs[1].deinit();
-    ccs[2] = ClusterConfiguration.init(ids[2], p2[0..]);
-    defer ccs[2].deinit();
+    for (ccs) |*cc, i| {
+        cc.* = ClusterConfiguration.init(ids[i], peers_by_node[i][0..]);
+    }
+    defer {
+        for (ccs) |*cc| {
+            cc.*.deinit();
+        }
+    }
 
-    cms[0] = CM{
-        .msg_queue = &peers[0].msg_queue,
-        .clock = Test.DummyClock{},
-        .election_timer = Test.DummyElectionTimer{},
-        .cluster_config = ccs[0],
-        .leadership_status = LeadershipStatus{
-            .member_type = MemberType.follower,
-            .current_term = 0,
-        },
-    };
-    cms[1] = CM{
-        .msg_queue = &peers[1].msg_queue,
-        .clock = Test.DummyClock{},
-        .election_timer = Test.DummyElectionTimer{},
-        .cluster_config = ccs[1],
-        .leadership_status = LeadershipStatus{
-            .member_type = MemberType.follower,
-            .current_term = 0,
-        },
-    };
-    cms[2] = CM{
-        .msg_queue = &peers[2].msg_queue,
-        .clock = Test.DummyClock{},
-        .election_timer = Test.DummyElectionTimer{},
-        .cluster_config = ccs[2],
-        .leadership_status = LeadershipStatus{
-            .member_type = MemberType.follower,
-            .current_term = 0,
-        },
-    };
-    // TODO deinit cluster config
+    for (cms) |*cm, i| {
+        cm.* = CM{
+            .msg_queue = &peers[i].msg_queue,
+            .clock = Test.DummyClock{},
+            .election_timer = Test.DummyElectionTimer{},
+            .cluster_config = ccs[i],
+            .leadership_status = LeadershipStatus{
+                .member_type = MemberType.follower,
+                .current_term = 0,
+            },
+        };
+    }
 
     var frames: [3]@Frame(CM.run) = undefined;
     for (frames) |*f, i| {
