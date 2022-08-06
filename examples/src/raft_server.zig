@@ -11,11 +11,17 @@ const os = std.os;
 const linux = os.linux;
 const time = std.time;
 
+const expect = std.testing.expect;
+
 const AsyncIOUring = io.AsyncIOUring;
 const AsyncWriter = io.AsyncWriter;
 const AsyncMutex = @import("async_mutex.zig").AsyncMutex;
 
 const server_util = @import("server.zig");
+
+// TODO why does this cause tests to be run...
+const rb = @import("./ring_buffer.zig");
+const RingBuffer = rb.RingBuffer;
 
 pub fn main() !void {
     const num_threads = 1;
@@ -40,9 +46,9 @@ pub const ProtocolVersion = struct {}; // TODO
 pub const RPCHeader = struct {
     protocol_version: u64,
     // ServerID of the ndoe sending RPC request
-    id: []u8,
+    id: []const u8,
     // ServerAddr of node sending request
-    addr: []u8,
+    addr: []const u8,
 };
 
 pub const RaftMessage = struct {
@@ -73,8 +79,8 @@ pub const RaftMessageContents = union(enum) {
     append_entries_response: AppendEntriesResponse,
     request_vote_request: struct {
         // Used to ensure safety
-        // last_log_index: u64,
-        // last_log_term: u64,
+        last_log_index: u64,
+        last_log_term: u64,
         // TODO: Paraphrase
         // Used to indicate to peers if this vote was triggered by a leadership
         // transfer. It is required for leadership transfer to work, because
@@ -191,52 +197,7 @@ pub const MemberType = enum {
 
 const LeadershipStatus = struct { current_term: u64, member_type: MemberType };
 
-fn runConsensusModule(
-    comptime MessageQueue: type,
-    comptime Clock: type,
-    comptime ElectionTimer: type,
-    comptime ClusterConfiguration: type,
-    msg_queue: MessageQueue,
-    clock: Clock,
-    election_timer: ElectionTimer,
-    leadership_status: *LeadershipStatus,
-    cluster_config: ClusterConfiguration,
-) void {
-    // We should start as a follower.
-    std.debug.assert(leadership_status.member_type == RaftServer.follower);
-
-    const CM = ConsensusModule(MessageQueue, Clock, ElectionTimer, ClusterConfiguration);
-
-    while (true) {
-        // Run as a follower until we don't hear from the leader within the election timeout.
-        CM.runAsFollower(msg_queue, election_timer, leadership_status);
-
-        // At this point, we've timed out waiting for an AppendEntriesRequest from the leader. We
-        // become a candidate and start an election.
-        leadership_status = LeadershipStatus{
-            .member_type = MemberType.candidate,
-            .current_term = leadership_status.current_term + 1,
-        };
-
-        // Run for election until there's a determinate result.
-        while (leadership_status == MemberType.candidate) {
-            leadership_status = CM.runAsCandidate(
-                msg_queue,
-                clock,
-                election_timer,
-                leadership_status,
-                cluster_config,
-            );
-        }
-
-        // If we won the election, hang out sending heartbeats until we receive a message from a
-        // server with a higher term and need to transition into the follower state.
-        if (leadership_status == MemberType.leader) {
-            CM.runAsLeader(msg_queue, clock, leadership_status, cluster_config);
-        }
-    }
-}
-//RaftMessage{
+//                         RaftMessage{
 //                                .rpc_header = .{
 //                                    .id = cluster_config.getMyId(),
 //                                    .addr = cluster_config.getMyAddr(),
@@ -276,11 +237,68 @@ fn ConsensusModule(
     comptime ClusterConfiguration: type,
 ) type {
     return struct {
+        msg_queue: *MessageQueue,
+        clock: Clock,
+        election_timer: ElectionTimer,
+        cluster_config: ClusterConfiguration,
+        leadership_status: LeadershipStatus,
+
+        pub fn run(self: *@This()) !void {
+            // We should start as a follower.
+            std.debug.assert(self.leadership_status.member_type == MemberType.follower);
+
+            const CM = @This();
+
+            while (true) {
+                std.debug.print("Transitioning to follower\n", .{});
+                // Run as a follower until we don't hear from the leader within the election timeout.
+                CM.runAsFollower(
+                    self.msg_queue,
+                    self.election_timer,
+                    &self.leadership_status,
+                    &self.cluster_config,
+                );
+
+                // At this point, we've timed out waiting for an AppendEntriesRequest from the leader. We
+                // become a candidate and start an election.
+                self.leadership_status = LeadershipStatus{
+                    .member_type = MemberType.candidate,
+                    .current_term = self.leadership_status.current_term + 1,
+                };
+                std.debug.print("Transitioning to candidate\n", .{});
+
+                // Run for election until there's a determinate result.
+                while (self.leadership_status.member_type == MemberType.candidate) {
+                    self.leadership_status = try CM.runAsCandidate(
+                        self.msg_queue,
+                        self.election_timer,
+                        self.leadership_status,
+                        &self.cluster_config,
+                    );
+                }
+
+                // If we won the election, hang out sending heartbeats until we receive a message
+                // from a server with a higher term and need to transition into the follower state.
+                if (self.leadership_status.member_type == MemberType.leader) {
+                    std.debug.print("Transitioning to leader\n", .{});
+                    CM.runAsLeader(
+                        self.msg_queue,
+                        self.clock,
+                        &self.leadership_status,
+                        &self.cluster_config,
+                    );
+                }
+            }
+        }
+
         fn runAsFollower(
-            msg_queue: MessageQueue,
+            msg_queue: *MessageQueue,
             election_timer: ElectionTimer,
             leadership_status: *LeadershipStatus,
+            cluster_config: *ClusterConfiguration,
         ) void {
+            var votedFor: ?[]const u8 = null;
+
             // Loop as a follower as long as we receive a message from the leader before the election
             // deadline.
             while (msg_queue.waitForNextWithDeadline(election_timer.getElectionDeadline())) |msg| {
@@ -301,27 +319,35 @@ fn ConsensusModule(
                         }
                     },
                     .request_vote_request => {
+                        var sender = cluster_config.getPeer(msg.rpc_header.id);
                         // TODO Maybe have a separate thread/process-y thing handling this stuff?
                         if (msg.term < leadership_status.current_term) {
                             // Reply false.
                         } else {
                             // TODO If votedFor is null or candidateId, and candidate’s log is at
                             // least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
+                            if (votedFor) |_| {
+                                // std.debug.print("Already voted for {s}", .{v});
+                                sender.sendRejectingVote(leadership_status.current_term);
+                            } else {
+                                sender.sendAffirmativeVote(leadership_status.current_term);
+                                votedFor = msg.rpc_header.id;
+                            }
                         }
                     },
                     else => {
-                        std.debug.print("Ignoring message\n", .{});
+                        //std.debug.print("Ignoring message\n", .{});
                     },
                 }
             }
         }
 
         fn runAsCandidate(
-            msg_queue: MessageQueue,
+            msg_queue: *MessageQueue,
             election_timer: ElectionTimer,
             leadership_status: LeadershipStatus,
             cluster_config: *ClusterConfiguration,
-        ) LeadershipStatus {
+        ) !LeadershipStatus {
             std.debug.assert(leadership_status.member_type == MemberType.candidate);
             // From Raft paper
             // • Increment currentTerm
@@ -333,10 +359,11 @@ fn ConsensusModule(
             }
 
             // set of peer ids who voted for us.
-            var votes = std.AutoHashMap(u64, void).init(std.testing.allocator);
+            var votes = std.StringHashMap(void).init(std.testing.allocator);
             defer votes.deinit();
 
-            // TODO Vote for self
+            // Vote for self.
+            try votes.put(cluster_config.my_id, {});
 
             // Loop as a candidate, looking for RequestVoteResponses from peers or an
             // AppendEntriesRequest from a new leader.
@@ -372,6 +399,7 @@ fn ConsensusModule(
                     },
                     .request_vote_response => |request_vote_response| {
                         if (request_vote_response.vote_granted) {
+                            try votes.put(msg.rpc_header.id, {});
                             // TODO: Add vote to tally
                             // If have enough votes, become leader.
                             // TODO >= ?
@@ -399,10 +427,10 @@ fn ConsensusModule(
         }
 
         fn runAsLeader(
-            msg_queue: MessageQueue,
+            msg_queue: *MessageQueue,
             clock: Clock,
             leadership_status: *LeadershipStatus,
-            cluster_config: ClusterConfiguration,
+            cluster_config: *ClusterConfiguration,
         ) void {
             const heartbeat_interval_ms = 50;
             var next_heartbeat_time = clock.now() + heartbeat_interval_ms;
@@ -412,7 +440,7 @@ fn ConsensusModule(
             while (true) {
                 // Send heartbeats to all peers if enough time has elapsed.
                 if (clock.now() > next_heartbeat_time) {
-                    for (cluster_config.getCurrentPeers()) |peer| {
+                    for (cluster_config.getCurrentPeers()) |*peer| {
                         peer.sendHeartbeat();
                     }
                     next_heartbeat_time = clock.now() + heartbeat_interval_ms;
@@ -459,23 +487,33 @@ test "runAsFollower returns when no messages arrive within election timeout" {
     const ClusterConfiguration = struct {
         const Peer = struct {
             pub fn sendAppendEntriesResponse(_: @This(), _: u64, _: RaftMessageContents) void {}
+            pub fn sendAffirmativeVote(_: *@This(), _: u64) void {}
+            pub fn sendRejectingVote(_: *@This(), _: u64) void {}
         };
 
-        pub fn getPeer(_: @This(), _: []u8) Peer {
+        pub fn getPeer(_: @This(), _: []const u8) Peer {
             return .{};
         }
     };
 
     var ls = LeadershipStatus{ .member_type = MemberType.follower, .current_term = 0 };
 
-    const CM = ConsensusModule(Test.DummyMessageQueue, Test.DummyClock, Test.DummyElectionTimer, ClusterConfiguration);
-    CM.runAsFollower(Test.DummyMessageQueue{}, Test.DummyElectionTimer{}, &ls);
+    const CM = ConsensusModule(
+        Test.DummyMessageQueue,
+        Test.DummyClock,
+        Test.DummyElectionTimer,
+        ClusterConfiguration,
+    );
+    var msg_queue = Test.DummyMessageQueue{};
+    var cluster_config = ClusterConfiguration{};
+    CM.runAsFollower(&msg_queue, Test.DummyElectionTimer{}, &ls, &cluster_config);
 }
 
 test "runAsCandidate sends request vote to all peers" {
     var ls = LeadershipStatus{ .member_type = MemberType.candidate, .current_term = 0 };
 
     const ClusterConfiguration = struct {
+        my_id: []const u8 = "",
         peers: [3]Peer = [_]Peer{ Peer{}, Peer{}, Peer{} },
 
         const Peer = struct {
@@ -486,7 +524,7 @@ test "runAsCandidate sends request vote to all peers" {
             }
         };
 
-        pub fn getPeer(_: @This(), _: []u8) Peer {
+        pub fn getPeer(_: @This(), _: []const u8) Peer {
             return .{};
         }
 
@@ -503,9 +541,354 @@ test "runAsCandidate sends request vote to all peers" {
     );
 
     var cluster_config = ClusterConfiguration{};
-    _ = CM.runAsCandidate(Test.DummyMessageQueue{}, Test.DummyElectionTimer{}, ls, &cluster_config);
+
+    var msg_queue = Test.DummyMessageQueue{};
+    _ = try CM.runAsCandidate(msg_queue, Test.DummyElectionTimer{}, ls, &cluster_config);
 
     for (cluster_config.getCurrentPeers()) |peer| {
         try std.testing.expectEqual(peer.received_request_vote, true);
     }
+}
+
+test "three node cluster" {
+    const MessageQueue = struct {
+        //TODO maybe try something fancy with asyncmutex
+        mtx: std.Thread.Mutex = .{},
+        messages: RingBuffer(RaftMessage, 1024) = .{},
+
+        //messages: UnbufferedChannel(RaftMessage) = .{},
+
+        pub fn waitForNextWithDeadline(self: *@This(), _: u64) ?RaftMessage {
+            self.mtx.lock();
+            defer self.mtx.unlock();
+            const msg = self.messages.dequeue() catch |err| {
+                if (err == error.RingBufferEmpty) {
+                    return null;
+                } else return err;
+            };
+
+            return msg;
+            //return self.messages.recv();
+        }
+
+        pub fn enqueue(self: *@This(), msg: RaftMessage) void {
+            //self.messages.send(msg);
+            self.mtx.lock();
+            defer self.mtx.unlock();
+            self.messages.enqueue(msg) catch {
+                //std.debug.print("RingBuffer enqueue error: .{} \n", .{err});
+                //std.os.exit(1);
+            };
+        }
+    };
+
+    const Peer = struct {
+        msg_queue: MessageQueue = MessageQueue{},
+        id: *const [3:0]u8 = "id1",
+        addr: *const [5:0]u8 = "addr1",
+
+        pub fn requestVote(self: *@This()) void {
+            self.msg_queue.enqueue(RaftMessage{
+                .rpc_header = .{
+                    .protocol_version = 0,
+                    .id = @as([]const u8, self.id[0..]),
+                    .addr = @as([]const u8, self.addr[0..]),
+                },
+                .term = 0,
+                .contents = RaftMessageContents{
+                    .request_vote_request = .{
+                        .last_log_index = 0,
+                        .last_log_term = 0,
+                        .leadership_transfer = false,
+                    },
+                },
+            });
+        }
+
+        pub fn sendHeartbeat(self: *@This()) void {
+            self.msg_queue.enqueue(RaftMessage{
+                .rpc_header = .{
+                    .protocol_version = 0,
+                    .id = @as([]const u8, self.id[0..]),
+                    .addr = @as([]const u8, self.addr[0..]),
+                },
+                .term = 0,
+                .contents = RaftMessageContents{
+                    .append_entries_request = .{
+                        .prev_log_index = 0,
+                        .prev_log_term = 0,
+                        .entries = "", // TODO make entries optional?
+                    },
+                },
+            });
+        }
+
+        fn sendVote(self: *@This(), term: u64, vote: bool) void {
+            self.msg_queue.enqueue(RaftMessage{
+                .rpc_header = .{
+                    .protocol_version = 0,
+                    .id = @as([]const u8, self.id[0..]),
+                    .addr = @as([]const u8, self.addr[0..]),
+                },
+                .term = term,
+                .contents = RaftMessageContents{
+                    .request_vote_response = .{
+                        .vote_granted = vote,
+                    },
+                },
+            });
+        }
+        pub fn sendAffirmativeVote(self: *@This(), term: u64) void {
+            self.sendVote(term, true);
+        }
+
+        pub fn sendRejectingVote(self: *@This(), term: u64) void {
+            self.sendVote(term, false);
+        }
+    };
+
+    var peers: [3]Peer = [_]Peer{ Peer{}, Peer{}, Peer{} };
+
+    const ClusterConfiguration = struct {
+        const Self = @This();
+
+        my_id: []const u8,
+        peers: []Peer,
+        peers_by_id: std.StringHashMap(*Peer),
+
+        pub fn init(my_id_: []const u8, starting_peers: []Peer) Self {
+            var self = Self{
+                .my_id = my_id_,
+                .peers = starting_peers,
+                .peers_by_id = std.StringHashMap(*Peer).init(std.testing.allocator),
+            };
+
+            for (self.peers) |*p| {
+                // TODO: Assuming capacity
+                self.peers_by_id.put(p.id, p) catch |err| {
+                    std.debug.print("err putting {}\n", .{err});
+                    std.os.exit(1);
+                };
+            }
+
+            return self;
+        }
+
+        pub fn deinit(self: *@This()) void {
+            self.peers_by_id.deinit();
+        }
+
+        pub fn getCurrentPeers(self: *@This()) []Peer {
+            return self.peers;
+        }
+
+        pub fn getPeer(self: *@This(), id: []const u8) *Peer {
+            var maybe_peer = self.peers_by_id.get(id);
+            if (maybe_peer) |peer| {
+                return peer;
+            } else {
+                // TODO
+                std.debug.print("Peer not found\n: {s}", .{id});
+                std.os.exit(1);
+            }
+        }
+    };
+
+    const CM = ConsensusModule(
+        MessageQueue,
+        Test.DummyClock,
+        Test.DummyElectionTimer,
+        ClusterConfiguration,
+    );
+
+    var threads: [3]std.Thread = undefined;
+    var cms: [3]CM = undefined;
+    const ids = [_][]const u8{ "0", "1", "2" };
+
+    for (threads) |*t, i| {
+        cms[i] = CM{
+            .msg_queue = &peers[i].msg_queue,
+            .clock = Test.DummyClock{},
+            .election_timer = Test.DummyElectionTimer{},
+            // TODO peers wired up wrong
+            .cluster_config = ClusterConfiguration.init(ids[i], peers[0..2]),
+            .leadership_status = LeadershipStatus{
+                .member_type = MemberType.follower,
+                .current_term = 0,
+            },
+        };
+
+        std.debug.print("Spawning: {}\n", .{i});
+        t.* = try std.Thread.spawn(.{}, CM.run, .{&cms[i]});
+    }
+
+    for (threads) |*t| {
+        t.join();
+    }
+
+    //for (cluster_config.getCurrentPeers()) |*peer| {
+    //    const msg_in_peer = peer.msg_queue.waitForNextWithDeadline(0);
+    //    if (msg_in_peer) |msg| {
+    //        try std.testing.expectEqual(msg.contents, RaftMessageContents{
+    //            .request_vote_request = .{
+    //                .last_log_index = 0,
+    //                .last_log_term = 0,
+    //                .leadership_transfer = false,
+    //            },
+    //        });
+    //    } else {
+    //        try std.testing.expectEqual(true, false); // TODO
+    //    }
+    //}
+}
+
+fn UnbufferedChannel(comptime T: type) type {
+    return struct {
+        const Self = @This();
+        value: ?T = null,
+        waiting_recv: ?anyframe = null,
+        waiting_send: ?anyframe = null,
+
+        // Sends a value to the channel.
+        //
+        // Suspends until the value is fetched by a call to recv.
+        pub fn send(self: *Self, t: T) void {
+            assert(self.value == null);
+            self.value = t;
+            if (self.waiting_recv) |recv_op| {
+                resume recv_op;
+            } else {
+                suspend {
+                    self.waiting_send = @frame();
+                }
+                self.waiting_send = null;
+            }
+        }
+
+        // Returns the value in the channel, or if there is no value present,
+        // suspends until a value is sent into the channel.
+        pub fn recv(self: *Self) T {
+            if (self.value) |val| {
+                self.value = null;
+                assert(self.waiting_send != null);
+                resume self.waiting_send.?;
+                return val;
+            } else {
+                suspend {
+                    self.waiting_recv = @frame();
+                }
+                self.waiting_recv = null;
+
+                assert(self.waiting_send == null);
+                assert(self.value != null);
+                const val = self.value.?;
+                self.value = null;
+                return val;
+            }
+        }
+    };
+}
+
+fn test_unbuffered_channel_send_before_receive(finished_test: *bool) !void {
+    var channel = UnbufferedChannel(i32){};
+    const val = 1;
+    var send_frame = async channel.send(val);
+    var recv_frame = async channel.recv();
+    await send_frame;
+    var received = await recv_frame;
+    try expect(val == received);
+    finished_test.* = true;
+}
+
+fn test_unbuffered_channel_send_after_receive(finished_test: *bool) !void {
+    var channel = UnbufferedChannel(i32){};
+    const val = 1;
+    var recv_frame = async channel.recv();
+    var send_frame = async channel.send(val);
+    await send_frame;
+    var received = await recv_frame;
+    try expect(val == received);
+    finished_test.* = true;
+}
+
+test "unbuffered channel send before receive" {
+    var finished_test = false;
+    _ = async test_unbuffered_channel_send_before_receive(&finished_test);
+    try expect(finished_test);
+}
+
+test "unbuffered channel send after receive" {
+    var finished_test = false;
+    _ = async test_unbuffered_channel_send_after_receive(&finished_test);
+    try expect(finished_test);
+}
+
+fn fibonacci_w_channel(channel: *UnbufferedChannel(i64)) void {
+    var a: i64 = 0;
+    var b: i64 = 1;
+    while (true) {
+        channel.send(b);
+        const next = a + b;
+        a = b;
+        b = next;
+    }
+}
+
+fn test_fibonacci_w_channel(finished_test: *bool) !void {
+    var channel = UnbufferedChannel(i64){};
+    _ = async fibonacci_w_channel(&channel);
+    try expect(channel.recv() == @intCast(i64, 1));
+    try expect(channel.recv() == @intCast(i64, 1));
+    try expect(channel.recv() == @intCast(i64, 2));
+    try expect(channel.recv() == @intCast(i64, 3));
+    try expect(channel.recv() == @intCast(i64, 5));
+    try expect(channel.recv() == @intCast(i64, 8));
+    try expect(channel.recv() == @intCast(i64, 13));
+    finished_test.* = true;
+}
+
+test "fibonacci w channel" {
+    var finished_test = false;
+    _ = async test_fibonacci_w_channel(&finished_test);
+    try expect(finished_test);
+}
+var test_frame: anyframe = undefined;
+fn fibonacci_w_channel_and_suspend(channel: *UnbufferedChannel(i64)) void {
+    var a: i64 = 0;
+    var b: i64 = 1;
+    while (true) {
+        suspend {
+            test_frame = @frame();
+        }
+        channel.send(b);
+        const next = a + b;
+        a = b;
+        b = next;
+    }
+}
+
+fn test_fibonacci_w_channel_and_suspend(finished_test: *bool) void {
+    var channel = UnbufferedChannel(i64){};
+    _ = async fibonacci_w_channel_and_suspend(&channel);
+    resume test_frame;
+    try expect(channel.recv() == @intCast(i64, 1));
+    resume test_frame;
+    try expect(channel.recv() == @intCast(i64, 1));
+    resume test_frame;
+    try expect(channel.recv() == @intCast(i64, 2));
+    resume test_frame;
+    try expect(channel.recv() == @intCast(i64, 3));
+    resume test_frame;
+    try expect(channel.recv() == @intCast(i64, 5));
+    resume test_frame;
+    try expect(channel.recv() == @intCast(i64, 8));
+    resume test_frame;
+    try expect(channel.recv() == @intCast(i64, 13));
+    finished_test.* = true;
+}
+
+test "Channel" {
+    var finished_test = false;
+    _ = async test_fibonacci_w_channel(&finished_test);
+    try expect(finished_test);
 }

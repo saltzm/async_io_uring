@@ -26,6 +26,7 @@ pub fn RingBuffer(comptime T: type, comptime capacity: usize) type {
         }
 
         /// Dequeues an item from the RingBuffer.
+        /// TODO return optional?
         pub fn dequeue(self: *Self) !T {
             if (self.getSize() == 0) {
                 return error.RingBufferEmpty;
