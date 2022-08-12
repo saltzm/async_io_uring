@@ -751,7 +751,7 @@ pub const Read = struct {
     }
 
     pub fn enqueueSubmissionQueueEntries(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
-        return try ring.read(user_data, op.fd, op.buffer, op.offset);
+        return try ring.read(user_data, op.fd, .{ .buffer = op.buffer }, op.offset);
     }
 
     /// See read man pages for specific meaning of possible errors: 
@@ -1821,7 +1821,7 @@ fn testReadWithManualAPIAndOverridenEnqueueSqes(ring: *AsyncIOUring) !void {
 
         pub fn enqueueSubmissionQueueEntries(self: @This(), my_ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
             self.value_to_set.* = true;
-            return try my_ring.read(user_data, self.read.fd, self.read.buffer, self.read.offset);
+            return try my_ring.read(user_data, self.read.fd, .{ .buffer = self.read.buffer }, self.read.offset);
         }
     } = .{
         .read = .{
