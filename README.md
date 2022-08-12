@@ -19,6 +19,8 @@ See the `examples` directory for an echo client and server that use the event lo
 
 \* If you need this for some reason, please create an issue.
 
+> :warning: **The `main` branch of `async_io_uring` will follow changes to zig's `master` branch to stay up-to-date with changes to the `IO_Uring` API (among others).** See the tagged releases of `async_io_uring` that are marked to work with specific stable versions of zig. (E.g., release v0.1.0 works with zig 0.9.1)
+
 ## Table of contents
 * [Background](#background)
 * [Goals](#goals)
