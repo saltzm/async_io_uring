@@ -1002,7 +1002,7 @@ pub const Recv = struct {
     }
 
     pub fn enqueueSubmissionQueueEntries(op: @This(), ring: *IO_Uring, user_data: u64) !*linux.io_uring_sqe {
-        return ring.recv(user_data, op.fd, op.buffer, op.flags);
+        return ring.recv(user_data, op.fd, .{ .buffer = op.buffer }, op.flags);
     }
 
     pub fn convertError(linux_err: os.E) ?Error {
